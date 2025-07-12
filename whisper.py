@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 
-
 @dataclass
 class AudioConfig:
     """Configuration for audio processing"""
