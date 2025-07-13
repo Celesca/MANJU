@@ -1,0 +1,24 @@
+# Core dependencies
+streamlit>=1.28.0
+transformers>=4.30.0
+pydub>=0.25.1
+tqdm>=4.65.0
+
+# Audio processing
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.0
+
+# Text-to-Speech
+pyttsx3>=2.90
+
+# HTTP requests for Ollama
+requests>=2.31.0
+
+# Additional utilities
+pandas>=2.0.0
+
+# TensorFlow compatibility for Transformers
+tf-keras
+
+# PyTorch will be installed separately via setup script to avoid conflicts

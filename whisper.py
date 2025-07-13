@@ -7,8 +7,12 @@ import time
 from tqdm import tqdm
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Union
 from dataclasses import dataclass
+
+# Force PyTorch backend to avoid TensorFlow issues
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
 @dataclass
 class AudioConfig:
@@ -108,6 +112,7 @@ class WhisperASR:
             torch_dtype=self.torch_dtype,
             device=self.device,
             batch_size=self.config.batch_size,
+            framework="pt"  # Force PyTorch framework
         )
         
         # Set language and task
@@ -170,17 +175,43 @@ class WhisperASR:
 class AudioFileManager:
     """Manages audio file operations and results"""
     
-    def __init__(self, input_folder: str):
-        self.input_folder = input_folder
+    def __init__(self, input_path: str):
+        self.input_path = input_path
         self.results: List[Dict[str, str]] = []
     
+    def is_directory(self) -> bool:
+        """Check if input path is a directory"""
+        return os.path.isdir(self.input_path)
+    
+    def is_file(self) -> bool:
+        """Check if input path is a file"""
+        return os.path.isfile(self.input_path)
+    
     def get_audio_files(self, extension: str = ".wav") -> List[str]:
-        """Get list of audio files from input folder"""
-        if not os.path.exists(self.input_folder):
-            raise FileNotFoundError(f"Input folder not found: {self.input_folder}")
-        
-        return [f for f in sorted(os.listdir(self.input_folder)) 
-                if f.lower().endswith(extension.lower())]
+        """Get list of audio files"""
+        if self.is_file():
+            # Single file
+            if self.input_path.lower().endswith(extension.lower()):
+                return [os.path.basename(self.input_path)]
+            else:
+                # Allow any audio extension for single files
+                return [os.path.basename(self.input_path)]
+        elif self.is_directory():
+            # Directory
+            if not os.path.exists(self.input_path):
+                raise FileNotFoundError(f"Directory not found: {self.input_path}")
+            
+            return [f for f in sorted(os.listdir(self.input_path)) 
+                    if f.lower().endswith(extension.lower())]
+        else:
+            raise FileNotFoundError(f"Path not found: {self.input_path}")
+    
+    def get_full_path(self, filename: str) -> str:
+        """Get full path for a filename"""
+        if self.is_file():
+            return self.input_path
+        else:
+            return os.path.join(self.input_path, filename)
     
     def add_result(self, filename: str, transcription: str) -> None:
         """Add a transcription result"""
@@ -200,7 +231,7 @@ class OverlappingASRPipeline:
     """Main pipeline for overlapping ASR processing"""
     
     def __init__(self, 
-                 input_folder: str,
+                 input_path: str,
                  audio_config: Optional[AudioConfig] = None,
                  processing_config: Optional[ProcessingConfig] = None):
         
@@ -209,10 +240,48 @@ class OverlappingASRPipeline:
         
         self.audio_processor = AudioProcessor(self.audio_config)
         self.asr = WhisperASR(self.processing_config)
-        self.file_manager = AudioFileManager(input_folder)
+        self.file_manager = AudioFileManager(input_path)
         
         self.start_time = None
         self.end_time = None
+    
+    def __call__(self, audio_path: str = None) -> str:
+        """
+        Make the pipeline callable - transcribe single file
+        
+        Args:
+            audio_path: Optional audio file path. If None, uses input_path from constructor
+            
+        Returns:
+            Transcription text
+        """
+        if audio_path:
+            # Create new file manager for the provided path
+            temp_file_manager = AudioFileManager(audio_path)
+            full_path = temp_file_manager.get_full_path(os.path.basename(audio_path))
+        else:
+            # Use existing file manager
+            if not self.file_manager.is_file():
+                raise ValueError("No single file specified. Provide audio_path or use a single file in constructor.")
+            full_path = self.file_manager.input_path
+        
+        try:
+            # Create overlapping chunks
+            chunk_files = self.audio_processor.preprocess_audio(full_path)
+            
+            if not chunk_files:
+                return "[EMPTY FILE]"
+            
+            # Transcribe chunks
+            transcription = self.asr.transcribe_chunks(chunk_files)
+            
+            # Cleanup temporary files
+            self.audio_processor.cleanup_temp_files(chunk_files)
+            
+            return transcription
+            
+        except Exception as e:
+            return f"[ERROR: {str(e)}]"
     
     def process_single_file(self, filename: str) -> Tuple[str, str]:
         """
@@ -224,7 +293,7 @@ class OverlappingASRPipeline:
         Returns:
             Tuple of (filename, transcription)
         """
-        full_path = os.path.join(self.file_manager.input_folder, filename)
+        full_path = self.file_manager.get_full_path(filename)
         
         try:
             # Create overlapping chunks
