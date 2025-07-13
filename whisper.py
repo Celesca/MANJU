@@ -52,9 +52,22 @@ class AudioProcessor:
             List of temporary file paths for audio chunks
         """
         try:
-            # Load and optimize audio
-            audio = AudioSegment.from_file(audio_path)
-            audio = audio.set_channels(self.config.channels).set_frame_rate(self.config.sample_rate)
+            # Check if ffmpeg is available
+            try:
+                # Load and optimize audio
+                audio = AudioSegment.from_file(audio_path)
+                audio = audio.set_channels(self.config.channels).set_frame_rate(self.config.sample_rate)
+            except Exception as e:
+                if "ffmpeg" in str(e).lower():
+                    print(f"FFmpeg error: {e}")
+                    print("💡 FFmpeg is required for audio processing.")
+                    print("📥 Install FFmpeg:")
+                    print("   1. Run: install_ffmpeg.bat")
+                    print("   2. Or download from: https://github.com/BtbN/FFmpeg-Builds/releases")
+                    print("   3. Add to PATH or set FFMPEG_BINARY environment variable")
+                    return []
+                else:
+                    raise e
             
             step_size = self.config.chunk_length_ms - self.config.overlap_ms
             chunk_files = []

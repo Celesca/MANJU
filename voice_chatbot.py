@@ -163,7 +163,7 @@ class AudioRecorder:
             )
             sd.wait()  # Wait until recording is finished
             
-            # Save to temporary file
+            # Save to temporary file as WAV (no ffmpeg needed)
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
             sf.write(temp_file.name, audio_data, self.sample_rate)
             
@@ -173,6 +173,17 @@ class AudioRecorder:
         except Exception as e:
             st.error(f"Recording failed: {str(e)}")
             return None
+
+
+def check_ffmpeg_available():
+    """Check if FFmpeg is available"""
+    try:
+        import subprocess
+        result = subprocess.run(['ffmpeg', '-version'], 
+                              capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
+    except:
+        return False
 
 
 def initialize_session_state():
@@ -253,8 +264,26 @@ def main():
         # Check system status
         st.subheader("System Status")
         
+        # FFmpeg Status
+        ffmpeg_available = check_ffmpeg_available()
+        if ffmpeg_available:
+            st.write("🎵 **FFmpeg:** ✅ Available")
+        else:
+            st.write("🎵 **FFmpeg:** ❌ Missing")
+            st.error("FFmpeg required for audio processing")
+            if st.button("📥 Install FFmpeg Guide"):
+                st.markdown("""
+                **Install FFmpeg:**
+                1. Run: `install_ffmpeg.bat`
+                2. Or download: [FFmpeg Builds](https://github.com/BtbN/FFmpeg-Builds/releases)
+                3. Add to PATH or restart
+                """)
+        
         # ASR Status
-        st.write("🎯 **ASR (Whisper):** ✅ Ready")
+        if ffmpeg_available:
+            st.write("🎯 **ASR (Whisper):** ✅ Ready")
+        else:
+            st.write("🎯 **ASR (Whisper):** ❌ Needs FFmpeg")
         
         # Ollama Status
         if st.session_state.llm.is_available():

@@ -57,12 +57,30 @@ def main():
         print("🔄 Trying alternative PyTorch installation...")
         run_command("pip install torch torchvision torchaudio", "Installing PyTorch (alternative)")
     
-    # Step 5: Install other requirements
-    print("\n📚 Step 5: Installing other requirements...")
+    # Step 5: Install ffmpeg
+    print("\n🎵 Step 5: Installing FFmpeg for audio processing...")
+    
+    # Try winget first (Windows Package Manager)
+    ffmpeg_installed = run_command(
+        'winget install "FFmpeg (Essentials Build)" --accept-source-agreements --accept-package-agreements',
+        "Installing FFmpeg via winget",
+        ignore_errors=True
+    )
+    
+    if not ffmpeg_installed:
+        print("⚠️  FFmpeg installation via winget failed")
+        print("📥 Manual FFmpeg installation required:")
+        print("   1. Download from: https://github.com/BtbN/FFmpeg-Builds/releases")
+        print("   2. Extract to C:\\ffmpeg")
+        print("   3. Add C:\\ffmpeg\\bin to your PATH environment variable")
+        print("   4. Restart your computer")
+    
+    # Step 6: Install other requirements
+    print("\n📚 Step 6: Installing other requirements...")
     run_command("pip install -r requirements.txt", "Installing requirements")
     
     # Step 6: Test critical imports
-    print("\n🧪 Step 6: Testing critical imports...")
+    print("\n🧪 Step 7: Testing critical imports...")
     
     # Test PyTorch
     try:

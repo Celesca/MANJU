@@ -22,23 +22,31 @@ pip uninstall tensorflow keras tf-keras -y
 pip install tf-keras
 
 echo.
-echo Step 4: Installing other dependencies...
+echo Step 4: Installing ffmpeg for audio processing...
+winget install "FFmpeg (Essentials Build)" --accept-source-agreements --accept-package-agreements 2>nul || (
+    echo FFmpeg installation via winget failed. Manual installation required.
+    echo Please download FFmpeg from: https://github.com/BtbN/FFmpeg-Builds/releases
+    echo Extract to C:\ffmpeg and add C:\ffmpeg\bin to your PATH
+)
+
+echo.
+echo Step 5: Installing other dependencies...
 pip install -r requirements.txt
 
 echo.
-echo Step 5: Testing PyTorch installation...
+echo Step 6: Testing PyTorch installation...
 python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')" || (
     echo PyTorch installation failed! Trying alternative installation...
     pip install torch torchvision torchaudio
 )
 
 echo.
-echo Step 6: Installing Microsoft Visual C++ Redistributable (if needed)...
+echo Step 7: Installing Microsoft Visual C++ Redistributable (if needed)...
 echo If you encounter DLL errors, please download and install:
 echo https://aka.ms/vs/17/release/vc_redist.x64.exe
 
 echo.
-echo Step 7: Checking Ollama installation...
+echo Step 8: Checking Ollama installation...
 ollama --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo Ollama is not installed. Please install it from: https://ollama.ai
@@ -50,7 +58,7 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo Step 8: Setup complete!
+echo Step 9: Setup complete!
 echo.
 echo IMPORTANT: If you still get DLL errors, please:
 echo 1. Install Visual C++ Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe

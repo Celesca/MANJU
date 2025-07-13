@@ -1,6 +1,41 @@
 # 🔧 Fix Instructions for Voice Chatbot Issues
 
-## Problem: Keras/TensorFlow Compatibility Error
+## Problem 1: FFmpeg Missing Error
+
+You're seeing this error:
+```
+Error in batch processing: ffmpeg was not found but is required to load audio files from filename
+Transcription failed or empty
+```
+
+### 🚀 Quick Fix for FFmpeg
+
+**Option 1: Run the FFmpeg installer**
+```cmd
+install_ffmpeg.bat
+```
+
+**Option 2: Manual Installation**
+```cmd
+# Using winget (Windows 10/11)
+winget install "FFmpeg (Essentials Build)"
+
+# Using chocolatey
+choco install ffmpeg
+
+# Manual download
+# 1. Download from: https://github.com/BtbN/FFmpeg-Builds/releases
+# 2. Extract to C:\ffmpeg
+# 3. Add C:\ffmpeg\bin to PATH
+```
+
+**Option 3: Portable FFmpeg**
+```cmd
+# Download from: https://www.gyan.dev/ffmpeg/builds/
+# Set FFMPEG_BINARY environment variable to ffmpeg.exe path
+```
+
+## Problem 2: Keras/TensorFlow Compatibility Error
 
 You're seeing this error:
 ```
