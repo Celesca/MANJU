@@ -13,6 +13,18 @@ from openai import OpenAI
 # Import your ASR pipeline
 from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
 
+# RAG imports
+try:
+    import chromadb
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    from typing import List, Dict, Optional
+    import re
+    import threading
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+
 # Text-to-Speech imports
 try:
     from gtts import gTTS
@@ -155,6 +167,293 @@ class OpenRouterLLM:
         cleaned_text = cleaned_text.strip()
         
         return cleaned_text
+
+
+class RAGEnabledOpenRouterLLM(OpenRouterLLM):
+    """OpenRouter LLM with RAG (Retrieval-Augmented Generation) capabilities using Qwen3-Embedding"""
+    
+    def __init__(self, model_name: str = "tencent/hunyuan-a13b-instruct:free", api_key: str = None, 
+                 vector_db_path: str = "./vector_db", embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"):
+        super().__init__(model_name, api_key)
+        
+        # Initialize vector database and embedding model
+        self.vector_db_path = vector_db_path
+        self.embedding_model_name = embedding_model
+        self.embedding_model = None
+        self.chroma_client = None
+        self.collection = None
+        self.rag_enabled = False
+        
+        # Try to initialize RAG components
+        if RAG_AVAILABLE:
+            try:
+                self._initialize_rag()
+            except Exception as e:
+                st.warning(f"RAG initialization failed: {str(e)}. Running without RAG.")
+                self.rag_enabled = False
+        else:
+            st.info("RAG dependencies not available. Install with: pip install chromadb sentence-transformers")
+    
+    def _initialize_rag(self):
+        """Initialize RAG components (vector DB and Qwen3 embedding model)"""
+        try:
+            with st.spinner("🔧 Initializing RAG system with Qwen3-Embedding..."):
+                # Initialize Qwen3-Embedding model for multilingual support
+                self.embedding_model = SentenceTransformer(self.embedding_model_name)
+                
+                # Initialize ChromaDB with persistent storage
+                self.chroma_client = chromadb.PersistentClient(path=self.vector_db_path)
+                
+                # Get or create collection
+                try:
+                    self.collection = self.chroma_client.get_collection("knowledge_base")
+                    st.success(f"✅ Loaded existing knowledge base with {self.collection.count()} documents")
+                except Exception:
+                    self.collection = self.chroma_client.create_collection(
+                        name="knowledge_base",
+                        metadata={"description": "Knowledge base for RAG with Qwen3-Embedding"}
+                    )
+                    st.info("📚 Created new knowledge base")
+                
+                self.rag_enabled = True
+                st.success(f"✅ RAG system initialized with {self.embedding_model_name}")
+                
+        except ImportError as e:
+            st.error("Missing RAG dependencies. Install with: pip install chromadb sentence-transformers")
+            raise e
+        except Exception as e:
+            st.error(f"RAG initialization error: {str(e)}")
+            raise e
+    
+    def is_rag_available(self) -> bool:
+        """Check if RAG system is available"""
+        return self.rag_enabled and self.embedding_model is not None and self.collection is not None
+    
+    def add_documents(self, documents: List[Dict[str, str]]) -> bool:
+        """Add documents to vector database
+        
+        Args:
+            documents: List of dicts with 'content', 'source', and optional 'metadata'
+        """
+        if not self.is_rag_available():
+            return False
+        
+        try:
+            with st.spinner("📝 Adding documents to knowledge base..."):
+                # Prepare data for ChromaDB
+                contents = []
+                metadatas = []
+                ids = []
+                
+                for i, doc in enumerate(documents):
+                    content = doc.get('content', '')
+                    source = doc.get('source', 'unknown')
+                    metadata = doc.get('metadata', {})
+                    
+                    # Skip empty content
+                    if not content.strip():
+                        continue
+                    
+                    contents.append(content)
+                    metadatas.append({
+                        'source': source,
+                        'length': len(content),
+                        'added_time': str(time.time()),
+                        **metadata
+                    })
+                    ids.append(f"doc_{int(time.time())}_{i}_{hash(content) % 100000}")
+                
+                if not contents:
+                    st.warning("No valid content to add")
+                    return False
+                
+                # Generate embeddings using Qwen3-Embedding
+                embeddings = self.embedding_model.encode(contents, 
+                                                       convert_to_tensor=False,
+                                                       normalize_embeddings=True).tolist()
+                
+                # Add to ChromaDB
+                self.collection.add(
+                    documents=contents,
+                    metadatas=metadatas,
+                    embeddings=embeddings,
+                    ids=ids
+                )
+                
+                st.success(f"✅ Added {len(contents)} documents to knowledge base")
+                return True
+                
+        except Exception as e:
+            st.error(f"Failed to add documents: {str(e)}")
+            return False
+    
+    def search_knowledge_base(self, query: str, top_k: int = 5, min_score: float = 0.3) -> List[Dict]:
+        """Search vector database for relevant documents"""
+        if not self.is_rag_available():
+            return []
+        
+        try:
+            # Generate query embedding using Qwen3-Embedding
+            query_embedding = self.embedding_model.encode([query], 
+                                                        convert_to_tensor=False,
+                                                        normalize_embeddings=True).tolist()
+            
+            # Search in ChromaDB
+            results = self.collection.query(
+                query_embeddings=query_embedding,
+                n_results=top_k,
+                include=['documents', 'metadatas', 'distances']
+            )
+            
+            # Format results with relevance filtering
+            retrieved_docs = []
+            if results['documents'] and results['documents'][0]:
+                for i, doc in enumerate(results['documents'][0]):
+                    # Convert distance to similarity score (cosine similarity)
+                    similarity_score = 1 - results['distances'][0][i]
+                    
+                    # Only include documents above minimum score threshold
+                    if similarity_score >= min_score:
+                        retrieved_docs.append({
+                            'content': doc,
+                            'source': results['metadatas'][0][i].get('source', 'unknown'),
+                            'score': similarity_score,
+                            'metadata': results['metadatas'][0][i]
+                        })
+            
+            # Sort by relevance score (highest first)
+            retrieved_docs.sort(key=lambda x: x['score'], reverse=True)
+            return retrieved_docs
+            
+        except Exception as e:
+            st.error(f"Knowledge base search failed: {str(e)}")
+            return []
+    
+    def chat_with_rag(self, message: str, conversation_history: list = None, 
+                      use_rag: bool = True, top_k: int = 3, min_score: float = 0.4) -> str:
+        """Enhanced chat with RAG capabilities using Qwen3-Embedding"""
+        
+        # If RAG is disabled or not available, fall back to normal chat
+        if not use_rag or not self.is_rag_available():
+            return self.chat(message, conversation_history)
+        
+        try:
+            # Search knowledge base for relevant information
+            retrieved_docs = self.search_knowledge_base(message, top_k=top_k, min_score=min_score)
+            
+            # Prepare enhanced prompt with retrieved context
+            if retrieved_docs:
+                # Format context from retrieved documents
+                context_sections = []
+                for i, doc in enumerate(retrieved_docs[:top_k], 1):
+                    context_sections.append(
+                        f"**ข้อมูลที่ {i}** (ความเกี่ยวข้อง: {doc['score']:.2f})\n"
+                        f"แหล่งที่มา: {doc['source']}\n"
+                        f"เนื้อหา: {doc['content']}\n"
+                    )
+                
+                context_text = "\n".join(context_sections)
+                
+                # Create enhanced prompt in Thai
+                enhanced_message = f"""โปรดตอบคำถามต่อไปนี้โดยใช้ข้อมูลจากฐานความรู้ที่กำหนดให้:
+
+🔍 **ข้อมูลจากฐานความรู้:**
+{context_text}
+
+❓ **คำถามจากผู้ใช้:** {message}
+
+📋 **คำแนะนำในการตอบ:**
+- ตอบเป็นภาषาไทยที่เป็นธรรมชาติและเข้าใจง่าย
+- อ้างอิงข้อมูลจากฐานความรู้ที่ให้มาข้างต้น
+- หากข้อมูลไม่เพียงพอหรือไม่เกี่ยวข้อง ให้บอกอย่างชัดเจน
+- ระบุแหล่งที่มาของข้อมูลที่ใช้ในการตอบ
+- ให้คำตอบที่มีประโยชน์และตรงประเด็น"""
+
+                # Show retrieved context in UI
+                with st.expander(f"🔍 ข้อมูลที่ค้นพบ ({len(retrieved_docs)} รายการ)"):
+                    for doc in retrieved_docs:
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.write(f"**แหล่งที่มา:** {doc['source']}")
+                            st.write(f"**เนื้อหา:** {doc['content'][:200]}...")
+                        with col2:
+                            st.metric("ความเกี่ยวข้อง", f"{doc['score']:.2f}")
+                        st.divider()
+            else:
+                enhanced_message = f"""คำถาม: {message}
+
+ไม่พบข้อมูลที่เกี่ยวข้องในฐานความรู้ โปรดตอบจากความรู้ทั่วไปและระบุว่าไม่มีข้อมูลเฉพาะจากฐานความรู้"""
+                
+                st.info("🔍 ไม่พบข้อมูลที่เกี่ยวข้องในฐานความรู้ - ใช้ความรู้ทั่วไป")
+            
+            # Get response from LLM
+            response = self.chat(enhanced_message, conversation_history)
+            
+            return response
+            
+        except Exception as e:
+            st.error(f"RAG chat failed: {str(e)}. Falling back to normal chat.")
+            return self.chat(message, conversation_history)
+    
+    def get_knowledge_base_stats(self) -> Dict:
+        """Get statistics about the knowledge base"""
+        if not self.is_rag_available():
+            return {"status": "RAG not available"}
+        
+        try:
+            count = self.collection.count()
+            return {
+                "status": "Available",
+                "document_count": count,
+                "embedding_model": self.embedding_model_name,
+                "database_path": self.vector_db_path,
+                "collection_name": "knowledge_base"
+            }
+        except Exception as e:
+            return {"status": f"Error: {str(e)}"}
+    
+    def clear_knowledge_base(self) -> bool:
+        """Clear all documents from knowledge base"""
+        if not self.is_rag_available():
+            return False
+        
+        try:
+            # Delete and recreate collection
+            self.chroma_client.delete_collection("knowledge_base")
+            self.collection = self.chroma_client.create_collection(
+                name="knowledge_base",
+                metadata={"description": "Knowledge base for RAG with Qwen3-Embedding"}
+            )
+            st.success("🗑️ Knowledge base cleared successfully")
+            return True
+        except Exception as e:
+            st.error(f"Failed to clear knowledge base: {str(e)}")
+            return False
+    
+    def load_sample_data(self) -> bool:
+        """Load sample Thai data for testing"""
+        if not self.is_rag_available():
+            return False
+        
+        sample_docs = [
+            {
+                'content': 'ประเทศไทยมีเมืองหลวงคือกรุงเทพมหานคร มีประชากรประมาณ 70 ล้านคน และมีภาษาราชการคือภาษาไทย',
+                'source': 'ข้อมูลทั่วไปเกี่ยวกับประเทศไทย',
+                'metadata': {'category': 'geography', 'language': 'thai'}
+            },
+            {
+                'content': 'อาหารไทยที่มีชื่อเสียงระดับโลก ได้แก่ ต้มยำกุ้ง ผัดไทย ส้มตำ และมะม่วงข้าวเหนียว',
+                'source': 'วัฒนธรรมอาหารไทย',
+                'metadata': {'category': 'culture', 'language': 'thai'}
+            },
+            {
+                'content': 'ประวัติศาสตร์ไทยมีความยาวนานกว่า 700 ปี เริ่มจากสมัยสุโขทัย อยุธยา ธนบุรี และปัจจุบันคือสมัยรัตนโกสินทร์',
+                'source': 'ประวัติศาสตร์ไทย',
+                'metadata': {'category': 'history', 'language': 'thai'}
+            }
+        ]
+        
+        return self.add_documents(sample_docs)
 
 
 class F5TTSThai:
@@ -501,8 +800,16 @@ def initialize_session_state():
             processing_config=processing_config
         )
     
+    # Initialize standard LLM
     if 'llm' not in st.session_state:
         st.session_state.llm = OpenRouterLLM(model_name="tencent/hunyuan-a13b-instruct:free")
+    
+    # Initialize RAG-enabled LLM
+    if 'rag_llm' not in st.session_state:
+        st.session_state.rag_llm = None
+    
+    if 'use_rag' not in st.session_state:
+        st.session_state.use_rag = False
 
     if 'tts' not in st.session_state:
         # Initialize TTS with F5-TTS preference for Thai
@@ -606,6 +913,89 @@ def main():
             if api_key_input and st.button("Connect with API Key"):
                 st.session_state.llm = OpenRouterLLM(api_key=api_key_input)
                 st.rerun()
+        
+        # RAG (Vector Search) Settings
+        st.divider()
+        st.subheader("🔍 RAG (Vector Search)")
+        
+        # RAG toggle
+        use_rag = st.checkbox("Enable RAG", value=st.session_state.use_rag, 
+                             help="Use vector search for enhanced knowledge retrieval")
+        st.session_state.use_rag = use_rag
+        
+        if use_rag:
+            # Initialize RAG LLM if needed
+            if st.session_state.rag_llm is None:
+                with st.spinner("🔧 Initializing RAG system..."):
+                    try:
+                        st.session_state.rag_llm = RAGEnabledOpenRouterLLM(
+                            model_name=st.session_state.llm.model_name,
+                            api_key=st.session_state.llm.api_key
+                        )
+                        st.success("✅ RAG system ready!")
+                    except Exception as e:
+                        st.error(f"❌ RAG initialization failed: {str(e)}")
+                        st.session_state.use_rag = False
+                        st.session_state.rag_llm = None
+            
+            # RAG status and controls
+            if st.session_state.rag_llm and st.session_state.rag_llm.is_rag_available():
+                stats = st.session_state.rag_llm.get_knowledge_base_stats()
+                st.write(f"📊 **Status:** {stats['status']}")
+                st.write(f"📄 **Documents:** {stats.get('document_count', 0)}")
+                st.write(f"🤖 **Model:** Qwen3-Embedding-0.6B")
+                
+                # RAG settings
+                col1, col2 = st.columns(2)
+                with col1:
+                    top_k = st.number_input("Top K results", min_value=1, max_value=10, value=3)
+                with col2:
+                    min_score = st.slider("Min relevance", 0.0, 1.0, 0.4, 0.1)
+                
+                # Document management
+                with st.expander("📚 Manage Knowledge Base"):
+                    # Add sample data
+                    if st.button("📝 Load Sample Thai Data"):
+                        if st.session_state.rag_llm.load_sample_data():
+                            st.success("✅ Sample data loaded!")
+                            st.rerun()
+                    
+                    # Upload documents
+                    uploaded_files = st.file_uploader(
+                        "Upload text files (.txt, .md):",
+                        type=['txt', 'md'],
+                        accept_multiple_files=True
+                    )
+                    
+                    if uploaded_files and st.button("📤 Upload Documents"):
+                        documents = []
+                        for file in uploaded_files:
+                            content = file.read().decode('utf-8')
+                            documents.append({
+                                'content': content,
+                                'source': file.name,
+                                'metadata': {'file_type': file.type}
+                            })
+                        
+                        if st.session_state.rag_llm.add_documents(documents):
+                            st.success(f"✅ Uploaded {len(documents)} documents!")
+                            st.rerun()
+                    
+                    # Clear knowledge base
+                    if st.button("🗑️ Clear Knowledge Base", type="secondary"):
+                        if st.session_state.rag_llm.clear_knowledge_base():
+                            st.rerun()
+            else:
+                st.error("❌ RAG system not available")
+                if RAG_AVAILABLE:
+                    st.info("💡 Try reinstalling: pip install chromadb sentence-transformers")
+                else:
+                    st.info("💡 Install RAG: pip install chromadb sentence-transformers")
+        
+        else:
+            # RAG disabled
+            if st.session_state.rag_llm:
+                st.info("🔍 RAG disabled - using standard LLM")
         
         # TTS Status
         if st.session_state.tts.is_available():
@@ -748,10 +1138,22 @@ def main():
                         # Get LLM response
                         if st.session_state.llm.is_available():
                             with st.spinner("Getting AI response..."):
-                                response = st.session_state.llm.chat(
-                                    transcription, 
-                                    st.session_state.conversation_history[:-1]
-                                )
+                                # Use RAG-enabled LLM if available and enabled
+                                if (st.session_state.use_rag and 
+                                    st.session_state.rag_llm and 
+                                    st.session_state.rag_llm.is_rag_available()):
+                                    response = st.session_state.rag_llm.chat_with_rag(
+                                        transcription, 
+                                        st.session_state.conversation_history[:-1],
+                                        use_rag=True,
+                                        top_k=3,
+                                        min_score=0.4
+                                    )
+                                else:
+                                    response = st.session_state.llm.chat(
+                                        transcription, 
+                                        st.session_state.conversation_history[:-1]
+                                    )
                             
                             # Add response to conversation
                             st.session_state.conversation_history.append({
@@ -820,10 +1222,22 @@ def main():
                         
                         if st.session_state.llm.is_available():
                             with st.spinner("Getting AI response..."):
-                                response = st.session_state.llm.chat(
-                                    transcription, 
-                                    st.session_state.conversation_history[:-1]
-                                )
+                                # Use RAG-enabled LLM if available and enabled
+                                if (st.session_state.use_rag and 
+                                    st.session_state.rag_llm and 
+                                    st.session_state.rag_llm.is_rag_available()):
+                                    response = st.session_state.rag_llm.chat_with_rag(
+                                        transcription, 
+                                        st.session_state.conversation_history[:-1],
+                                        use_rag=True,
+                                        top_k=3,
+                                        min_score=0.4
+                                    )
+                                else:
+                                    response = st.session_state.llm.chat(
+                                        transcription, 
+                                        st.session_state.conversation_history[:-1]
+                                    )
                             
                             st.session_state.conversation_history.append({
                                 "role": "assistant",
@@ -864,10 +1278,22 @@ def main():
                 # Get LLM response
                 if st.session_state.llm.is_available():
                     with st.spinner("Getting AI response..."):
-                        response = st.session_state.llm.chat(
-                            text_input, 
-                            st.session_state.conversation_history[:-1]
-                        )
+                        # Use RAG-enabled LLM if available and enabled
+                        if (st.session_state.use_rag and 
+                            st.session_state.rag_llm and 
+                            st.session_state.rag_llm.is_rag_available()):
+                            response = st.session_state.rag_llm.chat_with_rag(
+                                text_input, 
+                                st.session_state.conversation_history[:-1],
+                                use_rag=True,
+                                top_k=3,
+                                min_score=0.4
+                            )
+                        else:
+                            response = st.session_state.llm.chat(
+                                text_input, 
+                                st.session_state.conversation_history[:-1]
+                            )
                     
                     st.session_state.conversation_history.append({
                         "role": "assistant",
