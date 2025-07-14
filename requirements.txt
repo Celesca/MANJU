@@ -12,7 +12,10 @@ numpy>=1.24.0
 # Text-to-Speech
 pyttsx3>=2.90
 
-# HTTP requests for Ollama
+# OpenRouter API client
+openai>=1.0.0
+
+# HTTP requests
 requests>=2.31.0
 
 # Additional utilities

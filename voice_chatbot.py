@@ -8,6 +8,7 @@ import time
 import base64
 from io import BytesIO
 import pandas as pd
+from openai import OpenAI
 
 # Import your ASR pipeline
 from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
@@ -31,62 +32,77 @@ except ImportError:
     st.warning("Audio recording not available. Install with: pip install sounddevice soundfile")
 
 
-class OllamaLLM:
-    """Interface for Ollama API"""
+class OpenRouterLLM:
+    """Interface for OpenRouter API"""
     
-    def __init__(self, model_name: str = "phi3", base_url: str = "http://localhost:11434"):
+    def __init__(self, model_name: str = "moonshotai/kimi-k2:free", api_key: str = None):
         self.model_name = model_name
-        self.base_url = base_url
-        self.chat_url = f"{base_url}/api/chat"
+        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        
+        if self.api_key:
+            self.client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=self.api_key
+            )
+        else:
+            self.client = None
         
     def is_available(self) -> bool:
-        """Check if Ollama is running"""
+        """Check if OpenRouter is available"""
+        if not self.client or not self.api_key:
+            return False
+        
         try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            return response.status_code == 200
-        except:
+            # Test with a simple request
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=1
+            )
+            return True
+        except Exception as e:
+            st.error(f"OpenRouter connection failed: {str(e)}")
             return False
     
     def get_available_models(self) -> list:
-        """Get list of available models"""
-        try:
-            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                return [model['name'] for model in data.get('models', [])]
-        except:
-            pass
-        return []
+        """Get list of commonly available models on OpenRouter"""
+        # Common free/popular models on OpenRouter
+        return [
+            "moonshotai/kimi-k2:free",
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "meta-llama/llama-3.2-3b-instruct:free",
+            "meta-llama/llama-3.2-1b-instruct:free",
+            "microsoft/phi-3-mini-128k-instruct:free",
+            "microsoft/phi-3-medium-128k-instruct:free",
+            "google/gemma-2-9b-it:free",
+            "mistralai/mistral-7b-instruct:free",
+            "huggingfaceh4/zephyr-7b-beta:free"
+        ]
     
     def chat(self, message: str, conversation_history: list = None) -> str:
-        """Send message to Ollama and get response"""
+        """Send message to OpenRouter and get response"""
+        if not self.client:
+            return "Error: OpenRouter API key not configured. Please set OPENROUTER_API_KEY environment variable."
+        
         try:
             # Prepare messages
-            messages = conversation_history or []
+            messages = []
+            if conversation_history:
+                messages.extend(conversation_history)
             messages.append({"role": "user", "content": message})
             
-            payload = {
-                "model": self.model_name,
-                "messages": messages,
-                "stream": False
-            }
-            
-            response = requests.post(
-                self.chat_url, 
-                json=payload, 
-                timeout=30
+            # Make API call
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=1000,
+                temperature=0.7
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                return data.get('message', {}).get('content', 'No response received')
-            else:
-                return f"Error: {response.status_code} - {response.text}"
+            return response.choices[0].message.content
                 
-        except requests.exceptions.Timeout:
-            return "Error: Request timed out. Ollama might be busy."
         except Exception as e:
-            return f"Error communicating with Ollama: {str(e)}"
+            return f"Error communicating with OpenRouter: {str(e)}"
 
 
 class TextToSpeech:
@@ -210,7 +226,7 @@ def initialize_session_state():
         )
     
     if 'llm' not in st.session_state:
-        st.session_state.llm = OllamaLLM(model_name="phi3")
+        st.session_state.llm = OpenRouterLLM(model_name="moonshotai/kimi-k2:free")
     
     if 'tts' not in st.session_state:
         st.session_state.tts = TextToSpeech()
@@ -285,24 +301,31 @@ def main():
         else:
             st.write("🎯 **ASR (Whisper):** ❌ Needs FFmpeg")
         
-        # Ollama Status
+        # OpenRouter Status
         if st.session_state.llm.is_available():
             available_models = st.session_state.llm.get_available_models()
-            st.write("🧠 **Ollama:** ✅ Connected")
+            st.write("🧠 **OpenRouter:** ✅ Connected")
             
             # Model selection
             if available_models:
+                current_model = st.session_state.llm.model_name
                 selected_model = st.selectbox(
                     "Select Model:",
                     available_models,
-                    index=available_models.index("phi3") if "phi3" in available_models else 0
+                    index=available_models.index(current_model) if current_model in available_models else 0
                 )
                 st.session_state.llm.model_name = selected_model
             else:
                 st.write("No models available")
         else:
-            st.write("🧠 **Ollama:** ❌ Not connected")
-            st.error("Please start Ollama server: `ollama serve`")
+            st.write("🧠 **OpenRouter:** ❌ Not connected")
+            st.error("Please set OPENROUTER_API_KEY environment variable")
+            
+            # Add API key input option
+            api_key_input = st.text_input("Or enter API key here:", type="password")
+            if api_key_input and st.button("Connect with API Key"):
+                st.session_state.llm = OpenRouterLLM(api_key=api_key_input)
+                st.rerun()
         
         # TTS Status
         if st.session_state.tts.is_available():
@@ -386,7 +409,7 @@ def main():
                             if st.session_state.tts.is_available():
                                 st.session_state.tts.speak(response)
                         else:
-                            st.error("Ollama not available for response generation")
+                            st.error("OpenRouter not available for response generation")
                         
                         st.rerun()
                     else:
@@ -495,7 +518,7 @@ def main():
     st.divider()
     st.markdown("""
     <div style='text-align: center; color: gray;'>
-        🎤 Voice Chatbot powered by Whisper ASR + Ollama LLM + TTS
+        🎤 Voice Chatbot powered by Whisper ASR + OpenRouter LLM + TTS
     </div>
     """, unsafe_allow_html=True)
 
