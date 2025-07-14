@@ -10,9 +10,10 @@ soundfile>=0.12.1
 numpy>=1.24.0
 
 # Text-to-Speech
+gtts>=2.3.0
 pyttsx3>=2.90
 
-# F5-TTS-THAI (optional, for better Thai TTS)
+# F5-TTS-THAI (optional, for premium Thai TTS)
 torch>=2.0.0
 torchaudio>=2.0.0
 # f5-tts-thai (install via: pip install git+https://github.com/VYNCX/F5-TTS-THAI.git)

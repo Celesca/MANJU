@@ -15,11 +15,16 @@ from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
 
 # Text-to-Speech imports
 try:
-    import pyttsx3
-    TTS_AVAILABLE = True
+    from gtts import gTTS
+    GTTS_AVAILABLE = True
 except ImportError:
-    TTS_AVAILABLE = False
-    st.warning("pyttsx3 not installed. TTS will be disabled. Install with: pip install pyttsx3")
+    GTTS_AVAILABLE = False
+
+try:
+    import pyttsx3
+    PYTTSX3_AVAILABLE = True
+except ImportError:
+    PYTTSX3_AVAILABLE = False
 
 # F5-TTS-THAI imports
 try:
@@ -204,11 +209,122 @@ class F5TTSThai:
             return False
 
 
+class GTTSThai:
+    """Google Text-to-Speech handler for Thai language"""
+    
+    def __init__(self):
+        self.available = GTTS_AVAILABLE
+        # No need to initialize pygame since we're using streamlit audio
+    
+    def is_available(self) -> bool:
+        """Check if gTTS is available"""
+        return self.available
+    
+    def speak(self, text: str, language: str = "th", save_file: str = None) -> bool:
+        """Convert text to speech using Google TTS"""
+        if not self.available:
+            return False
+        
+        try:
+            # Create gTTS object
+            tts = gTTS(text=text, lang=language, slow=False)
+            
+            if save_file:
+                # Save to specified file
+                tts.save(save_file)
+                return True
+            else:
+                # Create temporary file and play
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+                temp_file.close()  # Close the file handle so gTTS can write to it
+                
+                # Save audio to temp file
+                tts.save(temp_file.name)
+                
+                # Check if file was created successfully
+                if not os.path.exists(temp_file.name):
+                    st.error("Failed to create audio file")
+                    return False
+                
+                # Play using streamlit audio player instead of pygame
+                with open(temp_file.name, 'rb') as audio_file:
+                    st.audio(audio_file.read(), format='audio/mp3')
+                
+                # Schedule cleanup after a delay
+                import threading
+                def cleanup_file():
+                    time.sleep(5)  # Wait 5 seconds for streamlit to load the audio
+                    try:
+                        if os.path.exists(temp_file.name):
+                            os.unlink(temp_file.name)
+                    except:
+                        pass
+                
+                cleanup_thread = threading.Thread(target=cleanup_file, daemon=True)
+                cleanup_thread.start()
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"gTTS speech generation failed: {str(e)}")
+            return False
+
+
+class PyttsxTTS:
+    """pyttsx3 TTS handler (fallback for non-Thai)"""
+    
+    def __init__(self):
+        self.engine = None
+        if PYTTSX3_AVAILABLE:
+            try:
+                self.engine = pyttsx3.init()
+                self._setup_voice()
+            except:
+                self.engine = None
+    
+    def _setup_voice(self):
+        """Setup pyttsx3 voice properties"""
+        if self.engine:
+            voices = self.engine.getProperty('voices')
+            if voices:
+                # Try to find a female voice or use first available
+                for voice in voices:
+                    if 'female' in voice.name.lower() or 'zira' in voice.name.lower():
+                        self.engine.setProperty('voice', voice.id)
+                        break
+                else:
+                    self.engine.setProperty('voice', voices[0].id)
+            
+            self.engine.setProperty('rate', 150)  # Speed
+            self.engine.setProperty('volume', 0.8)  # Volume
+    
+    def is_available(self) -> bool:
+        """Check if pyttsx3 is available"""
+        return self.engine is not None
+    
+    def speak(self, text: str, save_file: str = None) -> bool:
+        """Convert text to speech using pyttsx3"""
+        if not self.engine:
+            return False
+        
+        try:
+            if save_file:
+                self.engine.save_to_file(text, save_file)
+                self.engine.runAndWait()
+            else:
+                self.engine.say(text)
+                self.engine.runAndWait()
+            return True
+        except:
+            return False
+
+
 class TextToSpeech:
     """Text-to-Speech handler with multiple engine support"""
     
     def __init__(self, prefer_f5_tts: bool = True):
         self.prefer_f5_tts = prefer_f5_tts
+        self.gtts_engine = None
         self.pyttsx3_engine = None
         self.f5_tts_engine = None
         
@@ -216,74 +332,76 @@ class TextToSpeech:
         if prefer_f5_tts and F5_TTS_AVAILABLE:
             self.f5_tts_engine = F5TTSThai()
         
-        # Initialize pyttsx3 as fallback
-        if TTS_AVAILABLE:
-            try:
-                self.pyttsx3_engine = pyttsx3.init()
-                self._setup_pyttsx3_voice()
-            except:
-                self.pyttsx3_engine = None
-    
-    def _setup_pyttsx3_voice(self):
-        """Setup pyttsx3 voice properties"""
-        if self.pyttsx3_engine:
-            voices = self.pyttsx3_engine.getProperty('voices')
-            if voices:
-                # Try to find a female voice or use first available
-                for voice in voices:
-                    if 'female' in voice.name.lower() or 'zira' in voice.name.lower():
-                        self.pyttsx3_engine.setProperty('voice', voice.id)
-                        break
-                else:
-                    self.pyttsx3_engine.setProperty('voice', voices[0].id)
-            
-            self.pyttsx3_engine.setProperty('rate', 150)  # Speed
-            self.pyttsx3_engine.setProperty('volume', 0.8)  # Volume
+        # Initialize gTTS for Thai (primary choice)
+        if GTTS_AVAILABLE:
+            self.gtts_engine = GTTSThai()
+        
+        # Initialize pyttsx3 as last fallback
+        if PYTTSX3_AVAILABLE:
+            self.pyttsx3_engine = PyttsxTTS()
     
     def get_available_engines(self) -> list:
         """Get list of available TTS engines"""
         engines = []
         if self.f5_tts_engine and self.f5_tts_engine.is_available():
             engines.append("F5-TTS-THAI")
-        if self.pyttsx3_engine:
+        if self.gtts_engine and self.gtts_engine.is_available():
+            engines.append("gTTS-Thai")
+        if self.pyttsx3_engine and self.pyttsx3_engine.is_available():
             engines.append("pyttsx3")
         return engines
+    
+    def _detect_language(self, text: str) -> str:
+        """Detect if text is Thai or English"""
+        # Simple Thai detection - check for Thai Unicode characters
+        thai_chars = sum(1 for char in text if '\u0e00' <= char <= '\u0e7f')
+        total_chars = len([char for char in text if char.isalpha()])
+        
+        if total_chars == 0:
+            return "th"  # Default to Thai
+        
+        thai_ratio = thai_chars / total_chars
+        return "th" if thai_ratio > 0.3 else "en"
     
     def speak(self, text: str, engine: str = "auto", save_file: str = None) -> bool:
         """Convert text to speech using specified engine"""
         # Determine which engine to use
         if engine == "auto":
+            # Auto-select based on preference and availability
             if self.prefer_f5_tts and self.f5_tts_engine and self.f5_tts_engine.is_available():
                 engine = "F5-TTS-THAI"
-            elif self.pyttsx3_engine:
+            elif self.gtts_engine and self.gtts_engine.is_available():
+                engine = "gTTS-Thai"
+            elif self.pyttsx3_engine and self.pyttsx3_engine.is_available():
                 engine = "pyttsx3"
             else:
                 return False
         
-        # Use F5-TTS-THAI
+        # Use F5-TTS-THAI (best for Thai)
         if engine == "F5-TTS-THAI" and self.f5_tts_engine and self.f5_tts_engine.is_available():
-            return self.f5_tts_engine.speak(text, save_file=save_file)
-        
-        # Use pyttsx3 as fallback
-        elif engine == "pyttsx3" and self.pyttsx3_engine:
-            try:
-                if save_file:
-                    self.pyttsx3_engine.save_to_file(text, save_file)
-                    self.pyttsx3_engine.runAndWait()
-                else:
-                    self.pyttsx3_engine.say(text)
-                    self.pyttsx3_engine.runAndWait()
+            success = self.f5_tts_engine.speak(text, save_file=save_file)
+            if success:
                 return True
-            except:
-                return False
+            # Fall back to gTTS if F5-TTS fails
+            engine = "gTTS-Thai"
+        
+        # Use gTTS (good for Thai and other languages)
+        if engine == "gTTS-Thai" and self.gtts_engine and self.gtts_engine.is_available():
+            language = self._detect_language(text)
+            return self.gtts_engine.speak(text, language=language, save_file=save_file)
+        
+        # Use pyttsx3 as last fallback (not ideal for Thai)
+        elif engine == "pyttsx3" and self.pyttsx3_engine and self.pyttsx3_engine.is_available():
+            return self.pyttsx3_engine.speak(text, save_file=save_file)
         
         return False
     
     def is_available(self) -> bool:
         """Check if any TTS engine is available"""
         f5_available = self.f5_tts_engine and self.f5_tts_engine.is_available()
-        pyttsx3_available = self.pyttsx3_engine is not None
-        return f5_available or pyttsx3_available
+        gtts_available = self.gtts_engine and self.gtts_engine.is_available()
+        pyttsx3_available = self.pyttsx3_engine and self.pyttsx3_engine.is_available()
+        return f5_available or gtts_available or pyttsx3_available
 
 
 class AudioRecorder:
@@ -483,7 +601,7 @@ def main():
                 
                 # Show F5-TTS installation guide if not available
                 if "F5-TTS-THAI" not in available_engines:
-                    with st.expander("📥 Install F5-TTS-THAI for better Thai TTS"):
+                    with st.expander("📥 Install F5-TTS-THAI for premium Thai TTS"):
                         st.markdown("""
                         **Install F5-TTS-THAI:**
                         ```bash
@@ -492,18 +610,57 @@ def main():
                         ```
                         **Note:** Requires CUDA for GPU acceleration
                         """)
+                
+                # Show gTTS info if not available
+                if "gTTS-Thai" not in available_engines:
+                    with st.expander("📥 Install gTTS for Thai TTS"):
+                        st.markdown("""
+                        **Install gTTS (Google Text-to-Speech):**
+                        ```bash
+                        pip install gtts
+                        ```
+                        **Features:** Excellent Thai support, natural voice, requires internet
+                        """)
         else:
             st.write("🔊 **TTS:** ❌ Not available")
-            st.error("Install TTS engines: pip install pyttsx3")
+            st.error("Install TTS engines for Thai support:")
             
-            # F5-TTS installation guide
-            with st.expander("📥 Install F5-TTS-THAI (Recommended for Thai)"):
+            # Installation guides
+            with st.expander("📥 Recommended: Install gTTS (Best for Thai)"):
+                st.markdown("""
+                **Install gTTS:**
+                ```bash
+                pip install gtts
+                ```
+                **Why gTTS?**
+                - ✅ Excellent Thai language support
+                - ✅ Natural Google voices
+                - ✅ Easy to install
+                - ✅ Plays through Streamlit interface
+                - ❌ Requires internet connection
+                """)
+            
+            with st.expander("📥 Premium: Install F5-TTS-THAI"):
                 st.markdown("""
                 **Install F5-TTS-THAI:**
                 ```bash
                 pip install torch torchaudio
                 pip install git+https://github.com/VYNCX/F5-TTS-THAI.git
                 ```
+                **Why F5-TTS?**
+                - ✅ Highest quality Thai TTS
+                - ✅ Works offline
+                - ✅ Customizable voice
+                - ❌ Requires GPU for best performance
+                """)
+            
+            with st.expander("📥 Fallback: Install pyttsx3"):
+                st.markdown("""
+                **Install pyttsx3:**
+                ```bash
+                pip install pyttsx3
+                ```
+                **Note:** Limited Thai support, better for English
                 """)
         
         # Recording Status
@@ -705,7 +862,7 @@ def main():
     st.divider()
     st.markdown("""
     <div style='text-align: center; color: gray;'>
-        🎤 Voice Chatbot powered by Whisper ASR + OpenRouter LLM + F5-TTS-THAI/pyttsx3
+        🎤 Voice Chatbot powered by Whisper ASR + OpenRouter LLM + gTTS/F5-TTS Thai
     </div>
     """, unsafe_allow_html=True)
 
