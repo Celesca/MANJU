@@ -192,3 +192,5 @@ If you encounter issues:
 ---
 
 🎉 **Enjoy your voice chatbot!** Speak, chat, and interact naturally with AI!
+
+pip install git+https://github.com/VYNCX/F5-TTS-THAI.git

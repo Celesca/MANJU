@@ -21,6 +21,16 @@ except ImportError:
     TTS_AVAILABLE = False
     st.warning("pyttsx3 not installed. TTS will be disabled. Install with: pip install pyttsx3")
 
+# F5-TTS-THAI imports
+try:
+    import torch
+    import torchaudio
+    from f5_tts.api import F5TTS
+    F5_TTS_AVAILABLE = True
+except ImportError:
+    F5_TTS_AVAILABLE = False
+    # Don't show warning here as it's optional
+
 # Audio recording imports
 try:
     import sounddevice as sd
@@ -106,53 +116,160 @@ class OpenRouterLLM:
             return f"Error communicating with OpenRouter: {str(e)}"
 
 
-class TextToSpeech:
-    """Text-to-Speech handler"""
+class F5TTSThai:
+    """F5-TTS-THAI handler for Thai text-to-speech"""
     
     def __init__(self):
-        self.engine = None
+        self.model = None
+        self.model_path = "VIZINTZOR/F5-TTS-THAI"
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        if F5_TTS_AVAILABLE:
+            try:
+                self._initialize_model()
+            except Exception as e:
+                st.warning(f"F5-TTS-THAI initialization failed: {str(e)}")
+                self.model = None
+    
+    def _initialize_model(self):
+        """Initialize the F5-TTS model"""
+        try:
+            # Initialize F5-TTS model
+            self.model = F5TTS(model_type="F5-TTS", ckpt_file=None, vocab_file=None, onnx=False, device=self.device)
+            # Load the Thai model
+            self.model.load_checkpoint(self.model_path)
+        except Exception as e:
+            st.error(f"Failed to load F5-TTS-THAI model: {str(e)}")
+            self.model = None
+    
+    def is_available(self) -> bool:
+        """Check if F5-TTS-THAI is available"""
+        return F5_TTS_AVAILABLE and self.model is not None
+    
+    def speak(self, text: str, ref_audio: str = None, ref_text: str = None, save_file: str = None) -> bool:
+        """Convert text to speech using F5-TTS-THAI"""
+        if not self.model:
+            return False
+        
+        try:
+            # Default reference text in Thai if not provided
+            if ref_text is None:
+                ref_text = "สวัสดีครับ ผมชื่อ F5 ผมเป็นโมเดลสังเคราะห์เสียงพูดภาษาไทย"
+            
+            # Generate audio
+            audio, sample_rate = self.model.infer(
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                gen_text=text,
+                speed=0.9,  # Slightly slower for better pronunciation
+                cross_fade_duration=0.15,
+                nfe_step=32,  # Number of function evaluations
+            )
+            
+            # Save to file or play
+            if save_file:
+                torchaudio.save(save_file, torch.tensor(audio).unsqueeze(0), sample_rate)
+            else:
+                # Create temporary file for playing
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                torchaudio.save(temp_file.name, torch.tensor(audio).unsqueeze(0), sample_rate)
+                
+                # Play using streamlit
+                st.audio(temp_file.name)
+                
+                # Cleanup
+                try:
+                    os.unlink(temp_file.name)
+                except:
+                    pass
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"F5-TTS-THAI speech generation failed: {str(e)}")
+            return False
+
+
+class TextToSpeech:
+    """Text-to-Speech handler with multiple engine support"""
+    
+    def __init__(self, prefer_f5_tts: bool = True):
+        self.prefer_f5_tts = prefer_f5_tts
+        self.pyttsx3_engine = None
+        self.f5_tts_engine = None
+        
+        # Initialize F5-TTS-THAI if preferred and available
+        if prefer_f5_tts and F5_TTS_AVAILABLE:
+            self.f5_tts_engine = F5TTSThai()
+        
+        # Initialize pyttsx3 as fallback
         if TTS_AVAILABLE:
             try:
-                self.engine = pyttsx3.init()
-                self._setup_voice()
+                self.pyttsx3_engine = pyttsx3.init()
+                self._setup_pyttsx3_voice()
             except:
-                self.engine = None
+                self.pyttsx3_engine = None
     
-    def _setup_voice(self):
-        """Setup TTS voice properties"""
-        if self.engine:
-            voices = self.engine.getProperty('voices')
+    def _setup_pyttsx3_voice(self):
+        """Setup pyttsx3 voice properties"""
+        if self.pyttsx3_engine:
+            voices = self.pyttsx3_engine.getProperty('voices')
             if voices:
                 # Try to find a female voice or use first available
                 for voice in voices:
                     if 'female' in voice.name.lower() or 'zira' in voice.name.lower():
-                        self.engine.setProperty('voice', voice.id)
+                        self.pyttsx3_engine.setProperty('voice', voice.id)
                         break
                 else:
-                    self.engine.setProperty('voice', voices[0].id)
+                    self.pyttsx3_engine.setProperty('voice', voices[0].id)
             
-            self.engine.setProperty('rate', 150)  # Speed
-            self.engine.setProperty('volume', 0.8)  # Volume
+            self.pyttsx3_engine.setProperty('rate', 150)  # Speed
+            self.pyttsx3_engine.setProperty('volume', 0.8)  # Volume
     
-    def speak(self, text: str, save_file: str = None) -> bool:
-        """Convert text to speech"""
-        if not self.engine:
-            return False
-        
-        try:
-            if save_file:
-                self.engine.save_to_file(text, save_file)
-                self.engine.runAndWait()
+    def get_available_engines(self) -> list:
+        """Get list of available TTS engines"""
+        engines = []
+        if self.f5_tts_engine and self.f5_tts_engine.is_available():
+            engines.append("F5-TTS-THAI")
+        if self.pyttsx3_engine:
+            engines.append("pyttsx3")
+        return engines
+    
+    def speak(self, text: str, engine: str = "auto", save_file: str = None) -> bool:
+        """Convert text to speech using specified engine"""
+        # Determine which engine to use
+        if engine == "auto":
+            if self.prefer_f5_tts and self.f5_tts_engine and self.f5_tts_engine.is_available():
+                engine = "F5-TTS-THAI"
+            elif self.pyttsx3_engine:
+                engine = "pyttsx3"
             else:
-                self.engine.say(text)
-                self.engine.runAndWait()
-            return True
-        except:
-            return False
+                return False
+        
+        # Use F5-TTS-THAI
+        if engine == "F5-TTS-THAI" and self.f5_tts_engine and self.f5_tts_engine.is_available():
+            return self.f5_tts_engine.speak(text, save_file=save_file)
+        
+        # Use pyttsx3 as fallback
+        elif engine == "pyttsx3" and self.pyttsx3_engine:
+            try:
+                if save_file:
+                    self.pyttsx3_engine.save_to_file(text, save_file)
+                    self.pyttsx3_engine.runAndWait()
+                else:
+                    self.pyttsx3_engine.say(text)
+                    self.pyttsx3_engine.runAndWait()
+                return True
+            except:
+                return False
+        
+        return False
     
     def is_available(self) -> bool:
-        """Check if TTS is available"""
-        return self.engine is not None
+        """Check if any TTS engine is available"""
+        f5_available = self.f5_tts_engine and self.f5_tts_engine.is_available()
+        pyttsx3_available = self.pyttsx3_engine is not None
+        return f5_available or pyttsx3_available
 
 
 class AudioRecorder:
@@ -230,7 +347,11 @@ def initialize_session_state():
         st.session_state.llm = OpenRouterLLM(model_name="tencent/hunyuan-a13b-instruct:free")
 
     if 'tts' not in st.session_state:
-        st.session_state.tts = TextToSpeech()
+        # Initialize TTS with F5-TTS preference for Thai
+        st.session_state.tts = TextToSpeech(prefer_f5_tts=True)
+    
+    if 'tts_engine' not in st.session_state:
+        st.session_state.tts_engine = "auto"
     
     if 'recorder' not in st.session_state:
         st.session_state.recorder = AudioRecorder()
@@ -258,7 +379,7 @@ def display_conversation():
                 # Add TTS button for assistant responses
                 if st.session_state.tts.is_available():
                     if st.button(f"🔊 Play Response {i}", key=f"tts_{i}"):
-                        st.session_state.tts.speak(content)
+                        st.session_state.tts.speak(content, engine=st.session_state.tts_engine)
 
 
 def main():
@@ -330,9 +451,46 @@ def main():
         
         # TTS Status
         if st.session_state.tts.is_available():
+            available_engines = st.session_state.tts.get_available_engines()
             st.write("🔊 **TTS:** ✅ Available")
+            
+            # Show available engines
+            if available_engines:
+                st.write(f"**Engines:** {', '.join(available_engines)}")
+                
+                # Engine selection
+                engine_options = ["auto"] + available_engines
+                selected_engine = st.selectbox(
+                    "TTS Engine:",
+                    engine_options,
+                    index=engine_options.index(st.session_state.tts_engine) if st.session_state.tts_engine in engine_options else 0
+                )
+                st.session_state.tts_engine = selected_engine
+                
+                # Show F5-TTS installation guide if not available
+                if "F5-TTS-THAI" not in available_engines:
+                    with st.expander("📥 Install F5-TTS-THAI for better Thai TTS"):
+                        st.markdown("""
+                        **Install F5-TTS-THAI:**
+                        ```bash
+                        pip install torch torchaudio
+                        pip install git+https://github.com/VYNCX/F5-TTS-THAI.git
+                        ```
+                        **Note:** Requires CUDA for GPU acceleration
+                        """)
         else:
             st.write("🔊 **TTS:** ❌ Not available")
+            st.error("Install TTS engines: pip install pyttsx3")
+            
+            # F5-TTS installation guide
+            with st.expander("📥 Install F5-TTS-THAI (Recommended for Thai)"):
+                st.markdown("""
+                **Install F5-TTS-THAI:**
+                ```bash
+                pip install torch torchaudio
+                pip install git+https://github.com/VYNCX/F5-TTS-THAI.git
+                ```
+                """)
         
         # Recording Status
         if RECORDING_AVAILABLE:
@@ -406,9 +564,13 @@ def main():
                             
                             st.success("Response generated!")
                             
+                            # Display the response immediately
+                            st.info(f"🤖 **Assistant Response:** {response}")
+                            
                             # Auto-play response if TTS is available
                             if st.session_state.tts.is_available():
-                                st.session_state.tts.speak(response)
+                                with st.spinner("Playing response..."):
+                                    st.session_state.tts.speak(response, engine=st.session_state.tts_engine)
                         else:
                             st.error("OpenRouter not available for response generation")
                         
@@ -471,8 +633,13 @@ def main():
                                 "content": response
                             })
                             
+                            # Display the response immediately
+                            st.success("Response generated!")
+                            st.info(f"🤖 **Assistant Response:** {response}")
+                            
                             if st.session_state.tts.is_available():
-                                st.session_state.tts.speak(response)
+                                with st.spinner("Playing response..."):
+                                    st.session_state.tts.speak(response, engine=st.session_state.tts_engine)
                         
                         st.rerun()
                     else:
@@ -510,8 +677,13 @@ def main():
                         "content": response
                     })
                     
+                    # Display the response immediately
+                    st.success("Response generated!")
+                    st.info(f"🤖 **Assistant Response:** {response}")
+                    
                     if st.session_state.tts.is_available():
-                        st.session_state.tts.speak(response)
+                        with st.spinner("Playing response..."):
+                            st.session_state.tts.speak(response, engine=st.session_state.tts_engine)
                 
                 st.rerun()
     
@@ -519,7 +691,7 @@ def main():
     st.divider()
     st.markdown("""
     <div style='text-align: center; color: gray;'>
-        🎤 Voice Chatbot powered by Whisper ASR + OpenRouter LLM + TTS
+        🎤 Voice Chatbot powered by Whisper ASR + OpenRouter LLM + F5-TTS-THAI/pyttsx3
     </div>
     """, unsafe_allow_html=True)
 
