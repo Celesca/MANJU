@@ -35,7 +35,7 @@ except ImportError:
 class OpenRouterLLM:
     """Interface for OpenRouter API"""
     
-    def __init__(self, model_name: str = "moonshotai/kimi-k2:free", api_key: str = None):
+    def __init__(self, model_name: str = "tencent/hunyuan-a13b-instruct:free", api_key: str = None):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         
@@ -68,6 +68,7 @@ class OpenRouterLLM:
         """Get list of commonly available models on OpenRouter"""
         # Common free/popular models on OpenRouter
         return [
+            "tencent/hunyuan-a13b-instruct:free",
             "moonshotai/kimi-k2:free",
             "meta-llama/llama-3.2-11b-vision-instruct:free",
             "meta-llama/llama-3.2-3b-instruct:free",
@@ -226,8 +227,8 @@ def initialize_session_state():
         )
     
     if 'llm' not in st.session_state:
-        st.session_state.llm = OpenRouterLLM(model_name="moonshotai/kimi-k2:free")
-    
+        st.session_state.llm = OpenRouterLLM(model_name="tencent/hunyuan-a13b-instruct:free")
+
     if 'tts' not in st.session_state:
         st.session_state.tts = TextToSpeech()
     
