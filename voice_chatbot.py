@@ -125,10 +125,36 @@ class OpenRouterLLM:
                 temperature=0.7
             )
             
-            return response.choices[0].message.content
+            # Get the response content
+            content = response.choices[0].message.content
+            
+            # Clean up the response by removing <answer> and </answer> tags
+            content = self._clean_response(content)
+            
+            return content
                 
         except Exception as e:
             return f"Error communicating with OpenRouter: {str(e)}"
+    
+    def _clean_response(self, text: str) -> str:
+        """Remove <answer> and </answer> tags from the response"""
+        if not text:
+            return text
+        
+        import re
+        
+        # Remove <answer> and </answer> tags (case insensitive)
+        # This handles various formats:
+        # <answer>content</answer>
+        # <Answer>content</Answer>
+        # <ANSWER>content</ANSWER>
+        cleaned_text = re.sub(r'<\s*answer\s*>', '', text, flags=re.IGNORECASE)
+        cleaned_text = re.sub(r'</\s*answer\s*>', '', cleaned_text, flags=re.IGNORECASE)
+        
+        # Remove any extra whitespace that might be left
+        cleaned_text = cleaned_text.strip()
+        
+        return cleaned_text
 
 
 class F5TTSThai:
