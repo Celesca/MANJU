@@ -173,7 +173,7 @@ class RAGEnabledOpenRouterLLM(OpenRouterLLM):
     """OpenRouter LLM with RAG (Retrieval-Augmented Generation) capabilities using Qwen3-Embedding"""
     
     def __init__(self, model_name: str = "tencent/hunyuan-a13b-instruct:free", api_key: str = None, 
-                 vector_db_path: str = "./vector_db", embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"):
+                 vector_db_path: str = "./vector_db", embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
         super().__init__(model_name, api_key)
         
         # Initialize vector database and embedding model
@@ -197,8 +197,8 @@ class RAGEnabledOpenRouterLLM(OpenRouterLLM):
     def _initialize_rag(self):
         """Initialize RAG components (vector DB and Qwen3 embedding model)"""
         try:
-            with st.spinner("🔧 Initializing RAG system with Qwen3-Embedding..."):
-                # Initialize Qwen3-Embedding model for multilingual support
+            with st.spinner("🔧 Initializing RAG system with multilingual embeddings..."):
+                # Initialize multilingual embedding model that supports Thai
                 self.embedding_model = SentenceTransformer(self.embedding_model_name)
                 
                 # Initialize ChromaDB with persistent storage
@@ -211,7 +211,7 @@ class RAGEnabledOpenRouterLLM(OpenRouterLLM):
                 except Exception:
                     self.collection = self.chroma_client.create_collection(
                         name="knowledge_base",
-                        metadata={"description": "Knowledge base for RAG with Qwen3-Embedding"}
+                        metadata={"description": "Knowledge base for RAG with multilingual embeddings"}
                     )
                     st.info("📚 Created new knowledge base")
                 
@@ -267,7 +267,7 @@ class RAGEnabledOpenRouterLLM(OpenRouterLLM):
                     st.warning("No valid content to add")
                     return False
                 
-                # Generate embeddings using Qwen3-Embedding
+                # Generate embeddings using multilingual model
                 embeddings = self.embedding_model.encode(contents, 
                                                        convert_to_tensor=False,
                                                        normalize_embeddings=True).tolist()
@@ -293,7 +293,7 @@ class RAGEnabledOpenRouterLLM(OpenRouterLLM):
             return []
         
         try:
-            # Generate query embedding using Qwen3-Embedding
+            # Generate query embedding using multilingual model
             query_embedding = self.embedding_model.encode([query], 
                                                         convert_to_tensor=False,
                                                         normalize_embeddings=True).tolist()
@@ -331,7 +331,7 @@ class RAGEnabledOpenRouterLLM(OpenRouterLLM):
     
     def chat_with_rag(self, message: str, conversation_history: list = None, 
                       use_rag: bool = True, top_k: int = 3, min_score: float = 0.4) -> str:
-        """Enhanced chat with RAG capabilities using Qwen3-Embedding"""
+        """Enhanced chat with RAG capabilities using multilingual embeddings"""
         
         # If RAG is disabled or not available, fall back to normal chat
         if not use_rag or not self.is_rag_available():
@@ -422,7 +422,7 @@ class RAGEnabledOpenRouterLLM(OpenRouterLLM):
             self.chroma_client.delete_collection("knowledge_base")
             self.collection = self.chroma_client.create_collection(
                 name="knowledge_base",
-                metadata={"description": "Knowledge base for RAG with Qwen3-Embedding"}
+                metadata={"description": "Knowledge base for RAG with multilingual embeddings"}
             )
             st.success("🗑️ Knowledge base cleared successfully")
             return True
@@ -943,7 +943,7 @@ def main():
                 stats = st.session_state.rag_llm.get_knowledge_base_stats()
                 st.write(f"📊 **Status:** {stats['status']}")
                 st.write(f"📄 **Documents:** {stats.get('document_count', 0)}")
-                st.write(f"🤖 **Model:** Qwen3-Embedding-0.6B")
+                st.write(f"🤖 **Model:** paraphrase-multilingual-MiniLM-L12-v2")
                 
                 # RAG settings
                 col1, col2 = st.columns(2)

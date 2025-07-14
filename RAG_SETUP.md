@@ -6,7 +6,7 @@ RAG (Retrieval-Augmented Generation) enhances the chatbot by allowing it to sear
 
 ## Features
 
-- **Vector Search**: Uses Qwen3-Embedding-0.6B for multilingual embeddings
+- **Vector Search**: Uses sentence-transformers multilingual model for embeddings
 - **Document Storage**: ChromaDB for persistent vector database
 - **Thai Language Support**: Optimized for Thai language with multilingual embeddings
 - **Relevance Scoring**: Filters results by similarity score
@@ -31,7 +31,7 @@ RAG (Retrieval-Augmented Generation) enhances the chatbot by allowing it to sear
 
 ### 1. Enable RAG
 - In the sidebar, check "Enable RAG"
-- The system will initialize Qwen3-Embedding-0.6B and ChromaDB
+- The system will initialize the multilingual embedding model and ChromaDB
 - Wait for "✅ RAG system ready!" message
 
 ### 2. Add Documents
@@ -72,9 +72,9 @@ RAG (Retrieval-Augmented Generation) enhances the chatbot by allowing it to sear
 ## Technical Details
 
 ### Embedding Model
-- **Model**: Qwen/Qwen3-Embedding-0.6B
+- **Model**: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 - **Language Support**: Multilingual (Thai, English, etc.)
-- **Dimensions**: 768-dimensional embeddings
+- **Dimensions**: 384-dimensional embeddings
 - **Similarity**: Cosine similarity scoring
 
 ### Vector Database
@@ -115,7 +115,7 @@ RAG (Retrieval-Augmented Generation) enhances the chatbot by allowing it to sear
 
 - **CPU**: Works on CPU but slower
 - **GPU**: CUDA acceleration for embeddings (recommended)
-- **Memory**: ~2GB for Qwen3-Embedding model
+- **Memory**: ~500MB for multilingual embedding model
 - **Storage**: Vector database grows with documents
 
 ## File Structure
@@ -158,8 +158,8 @@ The RAG system provides methods for:
 You can modify the embedding model in the code:
 ```python
 # In RAGEnabledOpenRouterLLM class
-embedding_model = "Qwen/Qwen3-Embedding-0.6B"  # Default
-# Or try: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+embedding_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # Default
+# Or try: "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 ```
 
 ## Support
