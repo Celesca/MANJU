@@ -77,14 +77,20 @@ try:
 except ImportError:
     DOTENV_AVAILABLE = False
     st.warning("python-dotenv not installed. Install with: pip install python-dotenv")
-    
+
 
 class OpenRouterLLM:
     """Interface for OpenRouter API"""
     
     def __init__(self, model_name: str = "tencent/hunyuan-a13b-instruct:free", api_key: str = None):
         self.model_name = model_name
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        
+        # Try to get API key from multiple sources
+        self.api_key = (
+            api_key or 
+            os.getenv("OPENROUTER_API_KEY") or
+            self._load_api_key_from_env_file()
+        )
         
         if self.api_key:
             self.client = OpenAI(
@@ -93,6 +99,20 @@ class OpenRouterLLM:
             )
         else:
             self.client = None
+    
+    def _load_api_key_from_env_file(self) -> str:
+        """Manually load API key from .env file if dotenv is not available"""
+        try:
+            env_file_path = Path(".env")
+            if env_file_path.exists():
+                with open(env_file_path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("OPENROUTER_API_KEY="):
+                            return line.split("=", 1)[1].strip()
+        except Exception as e:
+            st.warning(f"Could not read .env file: {str(e)}")
+        return None
         
     def is_available(self) -> bool:
         """Check if OpenRouter is available"""
