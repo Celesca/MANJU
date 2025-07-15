@@ -1,2 +1,3 @@
 .env
 vector_db
+models/

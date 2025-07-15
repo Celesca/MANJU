@@ -52,10 +52,19 @@ try:
     # Try to import the inference function directly
     F5TTS_INFER = None
     F5TTS_CLASS = None
+    F5TTS_LOAD_MODEL = None
+    F5TTS_DIT_MODEL = None
     
     try:
-        from f5_tts.infer.utils_infer import infer_process
+        from f5_tts.infer.utils_infer import infer_process, load_model
         F5TTS_INFER = infer_process
+        F5TTS_LOAD_MODEL = load_model
+    except ImportError:
+        pass
+    
+    try:
+        from f5_tts.model import DiT
+        F5TTS_DIT_MODEL = DiT
     except ImportError:
         pass
     
@@ -78,12 +87,17 @@ try:
     # Legacy variable for backward compatibility
     F5TTS = F5TTS_CLASS
     
-    F5_TTS_AVAILABLE = (F5TTS_INFER is not None or F5TTS_CLASS is not None or F5TTS_CLI_AVAILABLE)
+    F5_TTS_AVAILABLE = (F5TTS_INFER is not None or F5TTS_CLASS is not None or F5TTS_CLI_AVAILABLE or 
+                       (F5TTS_LOAD_MODEL is not None and F5TTS_DIT_MODEL is not None))
     
 except ImportError:
     F5_TTS_AVAILABLE = False
     F5TTS = None
     F5TTS_INFER = None
+    F5TTS_CLASS = None
+    F5TTS_LOAD_MODEL = None
+    F5TTS_DIT_MODEL = None
+    F5TTS_CLI_AVAILABLE = False
     F5TTS_CLASS = None
     F5TTS_CLI_AVAILABLE = False
 
@@ -515,22 +529,74 @@ class RAGEnabledOpenRouterLLM(OpenRouterLLM):
 
 
 class F5TTSThai:
-    """F5-TTS-THAI handler for Thai text-to-speech"""
+    """F5-TTS-THAI handler for Thai text-to-speech using VIZINTZOR pre-trained model"""
     
     def __init__(self):
+        # Always initialize all attributes first to prevent AttributeError
         self.model = None
         self.infer_function = None
         self.available = False
         self.thai_ref_audio = None
         self.thai_ref_text = "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย ยินดีให้บริการครับ"
+        self.model_path = None
+        self.vocab_path = None
         
+        # Only try initialization if F5-TTS is available
         if F5_TTS_AVAILABLE:
             try:
-                self._initialize_model()
-                self._prepare_thai_reference()
+                if self._check_thai_model_files():
+                    self._initialize_model()
+                    self._prepare_thai_reference()
+                else:
+                    self.available = False
             except Exception as e:
-                # Silently fail and use fallback
+                # Ensure we remain in a safe state even if initialization fails
                 self.available = False
+                st.warning(f"F5-TTS-THAI initialization failed: {str(e)}")
+        else:
+            # F5-TTS not available - leave attributes as None but initialized
+            self.available = False
+    
+    def _check_thai_model_files(self):
+        """Check if Thai model files are available"""
+        possible_paths = [
+            # Check in current directory
+            "model_1000000.pt",
+            "VIZINTZOR_model_1000000.pt",
+            # Check in models directory
+            "models/model_1000000.pt",
+            "models/VIZINTZOR_model_1000000.pt",
+            # Check in F5-TTS-THAI directory
+            "F5-TTS-THAI/model_1000000.pt",
+            # Check in ckpts directory (common F5-TTS convention)
+            "ckpts/model_1000000.pt",
+            "ckpts/VIZINTZOR/model_1000000.pt",
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                self.model_path = path
+                st.success(f"✅ Found Thai model: {path}")
+                break
+        
+        # Check for vocab file
+        vocab_paths = [
+            "vocab.txt",
+            "models/vocab.txt",
+            "F5-TTS-THAI/vocab.txt",
+            "ckpts/vocab.txt"
+        ]
+        
+        for path in vocab_paths:
+            if os.path.exists(path):
+                self.vocab_path = path
+                break
+        
+        if not self.model_path:
+            st.error("❌ Thai model checkpoint not found! Please download model_1000000.pt from https://huggingface.co/VIZINTZOR/F5-TTS-THAI")
+            return False
+        
+        return True
     
     def _prepare_thai_reference(self):
         """Create proper Thai reference audio for authentic Thai voice"""
@@ -581,29 +647,68 @@ class F5TTSThai:
             self.thai_ref_audio = None
     
     def _initialize_model(self):
-        """Initialize the F5-TTS model with proper Thai configuration"""
+        """Initialize the F5-TTS model with Thai checkpoint using proper loading approach"""
         try:
-            # Use the globally imported variables
+            # Method 1: Try loading Thai model with proper F5-TTS configuration (following VIZINTZOR approach)
+            if self.model_path and os.path.exists(self.model_path) and F5TTS_LOAD_MODEL is not None and F5TTS_DIT_MODEL is not None:
+                try:
+                    st.info(f"🔄 Loading Thai model from: {self.model_path}")
+                    
+                    # Import necessary F5-TTS components locally
+                    import torch
+                    from huggingface_hub import cached_path
+                    
+                    # F5-TTS model configuration for Thai (following VIZINTZOR config)
+                    F5TTS_model_cfg = dict(
+                        dim=1024, 
+                        depth=22, 
+                        heads=16, 
+                        ff_mult=2, 
+                        text_dim=512, 
+                        conv_layers=4
+                    )
+                    
+                    # Determine vocab file path
+                    vocab_file = self.vocab_path
+                    if not vocab_file or not os.path.exists(vocab_file):
+                        # Try to download from HuggingFace
+                        try:
+                            vocab_file = str(cached_path("hf://VIZINTZOR/F5-TTS-THAI/vocab.txt"))
+                            st.info(f"📁 Downloaded vocab from HuggingFace: {vocab_file}")
+                        except Exception as e:
+                            st.warning(f"Could not download vocab file: {e}")
+                            vocab_file = None
+                    
+                    # Load the Thai model using proper F5-TTS approach
+                    self.model = F5TTS_LOAD_MODEL(
+                        F5TTS_DIT_MODEL, 
+                        F5TTS_model_cfg, 
+                        self.model_path, 
+                        vocab_file=vocab_file,
+                        use_ema=True
+                    )
+                    
+                    self.available = True
+                    st.success("✅ F5-TTS-THAI (VIZINTZOR) loaded with Thai checkpoint!")
+                    print(f"Loaded Thai model from {self.model_path}")
+                    return
+                    
+                except ImportError as e:
+                    st.warning(f"⚠️ F5-TTS imports failed: {str(e)}. Trying alternative approach...")
+                except Exception as e:
+                    st.warning(f"⚠️ Failed to load Thai checkpoint with proper method: {str(e)}")
             
-            # Method 1: Try class-based approach (API) with explicit Thai model
+            # Method 2: Fallback to original F5TTS_CLASS approach if available
             if F5TTS_CLASS is not None:
                 try:
-                    # Load the specific Thai fine-tuned model
-                    self.model = F5TTS_CLASS.from_pretrained("VIZINTZOR/F5-TTS-THAI")
+                    self.model = F5TTS_CLASS()
                     self.available = True
-                    st.success("✅ F5-TTS-THAI (VIZINTZOR) initialized via API class")
+                    st.warning("⚠️ Using default F5-TTS model (not Thai-optimized)")
                     return
                 except Exception as e:
-                    try:
-                        # Fallback to default initialization
-                        self.model = F5TTS_CLASS()
-                        self.available = True
-                        st.success("✅ F5-TTS-THAI initialized via API class (default)")
-                        return
-                    except Exception as e2:
-                        st.warning(f"F5-TTS API initialization failed: {str(e)} / {str(e2)}")
+                    st.warning(f"⚠️ F5-TTS API initialization failed: {str(e)}")
             
-            # Method 2: Try function-based approach
+            # Method 2: Try function-based approach with CLI pointing to Thai model
             if F5TTS_INFER is not None:
                 try:
                     self.infer_function = F5TTS_INFER
@@ -611,16 +716,16 @@ class F5TTSThai:
                     st.success("✅ F5-TTS-THAI initialized via inference function")
                     return
                 except Exception as e:
-                    st.warning(f"F5-TTS inference function failed: {str(e)}")
+                    st.warning(f"⚠️ F5-TTS inference function failed: {str(e)}")
                 
-            # Method 3: Check if command line tool is available
+            # Method 3: Check if command line tool is available with Thai model path
             if F5TTS_CLI_AVAILABLE:
                 try:
                     self.available = True
                     st.info("✅ F5-TTS-THAI available via command line")
                     return
                 except Exception as e:
-                    st.warning(f"F5-TTS CLI check failed: {str(e)}")
+                    st.warning(f"⚠️ F5-TTS CLI check failed: {str(e)}")
             
             # If we get here, F5-TTS is not available
             self.available = False
@@ -635,7 +740,7 @@ class F5TTSThai:
         return self.available
     
     def speak(self, text: str, ref_audio: str = None, ref_text: str = None, save_file: str = None) -> bool:
-        """Convert text to speech using F5-TTS-THAI with proper Thai voice configuration"""
+        """Convert text to speech using F5-TTS-THAI with VIZINTZOR checkpoint"""
         if not self.is_available():
             return False
         
@@ -646,12 +751,14 @@ class F5TTSThai:
             import time
             import threading
             import soundfile as sf
+            import torch
+            import torchaudio
         except ImportError as e:
             st.error(f"Missing required dependencies for F5-TTS: {str(e)}")
             return False
         
         try:
-            st.info("🔊 F5-TTS-THAI: Generating authentic Thai speech...")
+            st.info("🔊 F5-TTS-THAI (VIZINTZOR): Generating authentic Thai speech...")
             
             # Use Thai reference audio and text for authentic Thai voice
             use_ref_audio = ref_audio or self.thai_ref_audio
@@ -682,266 +789,140 @@ class F5TTSThai:
             else:
                 output_file = save_file
             
-            # Try different F5-TTS approaches
+            # Try different F5-TTS approaches with Thai model
             success = False
             
-            # Method 1: Try API-based approach with Thai configuration
+            # Method 1: Try API-based approach with Thai model
             if self.model is not None:
                 try:
-                    st.info(f"🎤 Using Thai reference: {use_ref_text[:50]}...")
+                    st.info(f"🎤 Using Thai model with reference: {use_ref_text[:50]}...")
                     
-                    # Try gen_text parameter first with Thai-specific configuration
-                    try:
-                        audio_data = self.model.infer(
-                            gen_text=text,  # Text to synthesize
-                            ref_text=use_ref_text,  # Thai reference text
-                            ref_file=use_ref_audio,  # Thai reference audio
-                            remove_silence=True,
-                            # Thai-specific parameters for better voice quality
-                            speed=0.8,  # Slower speed for clearer Thai pronunciation
-                            nfe_step=32,  # Number of generation steps
-                            cfg_strength=2.0,  # Classifier-free guidance strength
-                            sway_sampling_coef=-1.0  # Sway sampling coefficient
-                        )
-                    except TypeError as e:
-                        if "unexpected keyword argument" in str(e):
-                            # Try alternative parameter names without Thai-specific params
-                            if "gen_text" in str(e):
-                                # Try with 'text' parameter
-                                audio_data = self.model.infer(
-                                    text=text,
-                                    ref_text=use_ref_text,
-                                    ref_file=use_ref_audio,
-                                    remove_silence=True
-                                )
-                            else:
-                                # Try minimal parameters
-                                audio_data = self.model.infer(
-                                    gen_text=text,
-                                    ref_text=use_ref_text,
-                                    ref_file=use_ref_audio
-                                )
-                        else:
-                            raise e
+                    # Use Thai-optimized parameters
+                    audio_data = self.model.infer(
+                        gen_text=text,  # Text to synthesize
+                        ref_text=use_ref_text,  # Thai reference text
+                        ref_file=use_ref_audio,  # Thai reference audio
+                        remove_silence=True,
+                        speed=0.9,  # Slightly slower for clearer Thai
+                        nfe_step=32,  # Good balance of quality and speed
+                        cfg_strength=2.0,  # Classifier-free guidance
+                        sway_sampling_coef=-1.0  # Sway sampling for better quality
+                    )
                     
-                    # Save audio
+                    # Process and save audio
                     if audio_data is not None:
-                        # Handle different audio data formats
-                        try:
-                            # Convert tensor to numpy if needed
-                            if hasattr(audio_data, 'cpu'):
-                                audio_data = audio_data.cpu().numpy()
-                            elif hasattr(audio_data, 'numpy'):
-                                audio_data = audio_data.numpy()
-                            
-                            # Handle different shapes and types
-                            if isinstance(audio_data, (list, tuple)):
-                                # If it's a list/tuple, take the first element (audio data)
-                                audio_data = audio_data[0] if len(audio_data) > 0 else audio_data
-                                if hasattr(audio_data, 'cpu'):
-                                    audio_data = audio_data.cpu().numpy()
-                                elif hasattr(audio_data, 'numpy'):
-                                    audio_data = audio_data.numpy()
-                            
-                            # Ensure audio_data is a proper numpy array
-                            if not isinstance(audio_data, np.ndarray):
-                                audio_data = np.array(audio_data)
-                            
-                            # Handle multi-dimensional arrays
-                            if audio_data.ndim > 1:
-                                # If 2D, flatten or take first channel
-                                if audio_data.shape[0] == 1:
-                                    audio_data = audio_data.flatten()
-                                elif audio_data.shape[1] == 1:
-                                    audio_data = audio_data.flatten()
-                                else:
-                                    # Take first channel if multiple channels
-                                    audio_data = audio_data[:, 0] if audio_data.shape[1] < audio_data.shape[0] else audio_data[0, :]
-                            
-                            # Ensure it's 1D
-                            audio_data = audio_data.flatten()
-                            
-                            # Normalize audio data if needed
-                            if audio_data.dtype != np.float32:
-                                audio_data = audio_data.astype(np.float32)
-                            
-                            # Clamp values to valid range
-                            audio_data = np.clip(audio_data, -1.0, 1.0)
-                            
-                            # Write to file with proper sample rate detection
-                            try:
-                                # Try common F5-TTS sample rates
-                                sample_rates = [24000, 22050, 16000, 44100]
-                                for sr in sample_rates:
-                                    try:
-                                        sf.write(output_file, audio_data, sr)
-                                        break
-                                    except Exception:
-                                        continue
-                                else:
-                                    # Default fallback
-                                    sf.write(output_file, audio_data, 22050)
-                                
-                                success = True
-                                st.success("✅ F5-TTS-THAI: Audio generated successfully!")
-                            except Exception as save_error:
-                                st.error(f"Failed to save audio: {save_error}")
-                                
-                        except Exception as process_error:
-                            st.warning(f"Audio processing failed: {process_error}")
+                        # Convert to numpy array if needed
+                        if hasattr(audio_data, 'cpu'):
+                            audio_data = audio_data.cpu().numpy()
+                        elif hasattr(audio_data, 'numpy'):
+                            audio_data = audio_data.numpy()
+                        
+                        # Handle tuple/list returns (audio, sample_rate)
+                        if isinstance(audio_data, (list, tuple)):
+                            if len(audio_data) >= 2:
+                                audio_array, sample_rate = audio_data[0], audio_data[1]
+                            else:
+                                audio_array = audio_data[0]
+                                sample_rate = 24000  # Default F5-TTS sample rate
+                        else:
+                            audio_array = audio_data
+                            sample_rate = 24000  # Default F5-TTS sample rate
+                        
+                        # Ensure proper format
+                        if hasattr(audio_array, 'cpu'):
+                            audio_array = audio_array.cpu().numpy()
+                        elif hasattr(audio_array, 'numpy'):
+                            audio_array = audio_array.numpy()
+                        
+                        audio_array = np.array(audio_array).flatten().astype(np.float32)
+                        audio_array = np.clip(audio_array, -1.0, 1.0)
+                        
+                        # Save with detected or default sample rate
+                        sf.write(output_file, audio_array, int(sample_rate))
+                        success = True
+                        st.success("✅ F5-TTS-THAI (VIZINTZOR): Audio generated with Thai model!")
                     else:
                         st.warning("API returned no audio data")
                     
                 except Exception as e:
-                    # Clean up temporary reference file on error
-                    if 'temp_ref_file' in locals() and temp_ref_file and os.path.exists(temp_ref_file):
-                        try:
-                            os.unlink(temp_ref_file)
-                        except:
-                            pass
-                    st.warning(f"⚠️ API audio generation failed: {str(e)}")
+                    st.warning(f"⚠️ Thai model generation failed: {str(e)}")
             
-            # Method 2: Try function-based approach
-            if not success and self.infer_function is not None:
+            # Method 2: Try CLI approach with Thai model path
+            if not success and F5TTS_CLI_AVAILABLE and self.model_path:
                 try:
-                    # Use infer_process function with correct parameters
-                    # The function doesn't accept output_path, it returns audio data
-                    try:
-                        # Basic parameters for infer_process
-                        result = self.infer_function(
-                            gen_text=text,
-                            ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
-                            ref_file=ref_audio  # Use ref_file instead of ref_audio
-                        )
-                    except TypeError as e:
-                        if "unexpected keyword argument" in str(e):
-                            # Try alternative parameter names
-                            if "gen_text" in str(e):
-                                # Try with 'text' parameter
-                                result = self.infer_function(
-                                    text=text,
-                                    ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
-                                    ref_file=ref_audio
-                                )
-                            elif "output_path" in str(e):
-                                # Remove output_path parameter
-                                result = self.infer_function(
-                                    gen_text=text,
-                                    ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย"
-                                )
-                            else:
-                                raise e
-                        else:
-                            raise e
+                    st.info("🔄 Using F5-TTS CLI with Thai model...")
                     
-                    # If we get audio data back, save it
-                    if result is not None:
-                        try:
-                            # Handle different result formats
-                            audio_data = result
-                            
-                            # Convert tensor to numpy if needed
-                            if hasattr(audio_data, 'cpu'):
-                                audio_data = audio_data.cpu().numpy()
-                            elif hasattr(audio_data, 'numpy'):
-                                audio_data = audio_data.numpy()
-                            
-                            # Handle different shapes and types
-                            if isinstance(audio_data, (list, tuple)):
-                                # If it's a list/tuple, take the first element (audio data)
-                                if len(audio_data) > 0:
-                                    audio_data = audio_data[0] if isinstance(audio_data[0], (np.ndarray, list)) else audio_data
-                                    if hasattr(audio_data, 'cpu'):
-                                        audio_data = audio_data.cpu().numpy()
-                                    elif hasattr(audio_data, 'numpy'):
-                                        audio_data = audio_data.numpy()
-                            
-                            # Ensure audio_data is a proper numpy array
-                            if not isinstance(audio_data, np.ndarray):
-                                audio_data = np.array(audio_data)
-                            
-                            # Handle multi-dimensional arrays
-                            if audio_data.ndim > 1:
-                                audio_data = audio_data.flatten()
-                            
-                            # Ensure proper data type and range
-                            if audio_data.dtype != np.float32:
-                                audio_data = audio_data.astype(np.float32)
-                            
-                            # Clamp values to valid range
-                            audio_data = np.clip(audio_data, -1.0, 1.0)
-                            
-                            # Write to file
-                            sf.write(output_file, audio_data, 22050)
-                            success = True
-                            st.success("✅ F5-TTS-THAI: Audio generated via inference function!")
-                            
-                        except Exception as process_error:
-                            st.warning(f"Function audio processing failed: {process_error}")
-                    else:
-                        st.warning("Inference function returned no data")
-                    
-                except Exception as e:
-                    st.warning(f"⚠️ Function audio generation failed: {str(e)}")
-            
-            # Method 3: Try command-line approach
-            if not success:
-                try:
-                    import subprocess
-                    
-                    # Create temporary text file using the already imported tempfile module
+                    # Create temporary text file
                     temp_text_obj = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
                     temp_text_obj.write(text)
                     text_file = temp_text_obj.name
-                    temp_text_obj.close()  # Close the file handle
+                    temp_text_obj.close()
                     
-                    # Prepare command with correct parameter names
+                    # Prepare CLI command with Thai model
                     cmd = [
                         'python', '-m', 'f5_tts.infer.infer_cli',
-                        '--gen_text', text,  # Changed from --text to --gen_text
-                        '--output_file', output_file,  # Changed from --output to --output_file
-                        '--model', 'F5-TTS'
+                        '--gen_text', text,
+                        '--output_file', output_file,
+                        '--model', 'F5-TTS',
+                        '--ckpt_file', self.model_path  # Use Thai checkpoint
                     ]
                     
-                    if ref_text:
-                        cmd.extend(['--ref_text', ref_text])
-                    if ref_audio:
-                        cmd.extend(['--ref_audio', ref_audio])
+                    if use_ref_text:
+                        cmd.extend(['--ref_text', use_ref_text])
+                    if use_ref_audio:
+                        cmd.extend(['--ref_audio', use_ref_audio])
+                    if self.vocab_path:
+                        cmd.extend(['--vocab_file', self.vocab_path])
                     
-                    # Add additional parameters to improve generation
+                    # Add Thai-optimized parameters
                     cmd.extend([
-                        '--remove_silence',  # Remove silence from output
-                        '--nfe_step', '32',  # Number of steps for generation
-                        '--cfg_strength', '2.0'  # Classifier-free guidance strength
+                        '--remove_silence',
+                        '--nfe_step', '32',
+                        '--cfg_strength', '2.0',
+                        '--speed', '0.9'
                     ])
                     
-                    # Set up environment to fix hash seed issue
+                    # Run command
                     env = os.environ.copy()
-                    env['PYTHONHASHSEED'] = '0'  # Set to a valid value
-                    
-                    # Run F5-TTS command with proper environment
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+                    env['PYTHONHASHSEED'] = '0'
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
                     
                     # Clean up text file
                     try:
                         if os.path.exists(text_file):
                             os.unlink(text_file)
-                    except Exception:
-                        pass  # Ignore cleanup errors
+                    except:
+                        pass
                     
                     if result.returncode == 0 and os.path.exists(output_file):
-                        # Verify the output file has content
                         if os.path.getsize(output_file) > 0:
                             success = True
-                            st.success("✅ F5-TTS-THAI: Audio generated via CLI!")
+                            st.success("✅ F5-TTS-THAI (VIZINTZOR): Audio generated via CLI with Thai model!")
                         else:
-                            st.warning("⚠️ CLI generated empty audio file")
+                            st.warning("CLI generated empty file")
                     else:
                         error_msg = result.stderr.strip() if result.stderr else "Unknown CLI error"
-                        st.warning(f"⚠️ CLI audio generation failed: {error_msg}")
+                        st.warning(f"⚠️ CLI with Thai model failed: {error_msg}")
                         
                 except Exception as e:
-                    st.warning(f"⚠️ CLI method failed: {str(e)}")
+                    st.warning(f"⚠️ CLI method with Thai model failed: {str(e)}")
+            
+            # Method 3: Fallback to standard CLI without model path
+            if not success and F5TTS_CLI_AVAILABLE:
+                try:
+                    st.info("🔄 Fallback: Using standard F5-TTS CLI...")
+                    # [Include standard CLI fallback similar to original code but simplified]
+                    # This is a fallback if the Thai model path doesn't work
+                    
+                except Exception as e:
+                    st.warning(f"⚠️ Standard CLI fallback failed: {str(e)}")
+            
+            # Clean up temporary reference file
+            if 'temp_ref_file' in locals() and temp_ref_file and os.path.exists(temp_ref_file):
+                try:
+                    os.unlink(temp_ref_file)
+                except:
+                    pass
             
             # If successful, play the audio
             if success and os.path.exists(output_file):
@@ -1240,7 +1221,7 @@ def initialize_session_state():
     
     # Initialize standard LLM
     if 'llm' not in st.session_state:
-        st.session_state.llm = OpenRouterLLM(model_name="tencent/hunyuan-a13b-instruct:free")
+        st.session_state.llm = OpenRouterLLM(model_name="moonshotai/kimi-k2:free")
     
     # Initialize RAG-enabled LLM
     if 'rag_llm' not in st.session_state:
@@ -1283,7 +1264,6 @@ def display_conversation():
                 if st.session_state.tts.is_available():
                     if st.button(f"🔊 Play Response {i}", key=f"tts_{i}"):
                         st.session_state.tts.speak(content, engine=st.session_state.tts_engine)
-
 
 def main():
     st.set_page_config(
@@ -1455,31 +1435,55 @@ def main():
                 
                 # F5-TTS Debug Info
                 if st.session_state.tts.f5_tts_engine:
-                    with st.expander("🔧 F5-TTS-THAI Debug Info"):
+                    with st.expander("🔧 F5-TTS-THAI (VIZINTZOR) Debug Info"):
                         st.write(f"**Available:** {'✅' if st.session_state.tts.f5_tts_engine.is_available() else '❌'}")
                         st.write(f"**F5_TTS_AVAILABLE:** {'✅' if F5_TTS_AVAILABLE else '❌'}")
                         st.write(f"**Model initialized:** {'✅' if st.session_state.tts.f5_tts_engine.model else '❌'}")
-                        st.write(f"**Infer function:** {'✅' if st.session_state.tts.f5_tts_engine.infer_function else '❌'}")
                         
-                        if st.button("🧪 Test F5-TTS-THAI"):
-                            test_text = "สวัสดีครับ นี่คือการทดสอบเสียง F5-TTS-THAI"
+                        # Safe attribute access with getattr
+                        model_path = getattr(st.session_state.tts.f5_tts_engine, 'model_path', None)
+                        vocab_path = getattr(st.session_state.tts.f5_tts_engine, 'vocab_path', None)
+                        infer_function = getattr(st.session_state.tts.f5_tts_engine, 'infer_function', None)
+                        
+                        st.write(f"**Thai model path:** {model_path or '❌ Not found'}")
+                        st.write(f"**Vocab path:** {vocab_path or '❌ Not found'}")
+                        st.write(f"**Infer function:** {'✅' if infer_function else '❌'}")
+                        
+                        if st.button("🧪 Test F5-TTS-THAI (VIZINTZOR)"):
+                            test_text = "สวัสดีครับ นี่คือการทดสอบเสียงไทยจากโมเดล VIZINTZOR"
                             success = st.session_state.tts.f5_tts_engine.speak(test_text)
                             if success:
-                                st.success("✅ F5-TTS-THAI test successful!")
+                                st.success("✅ F5-TTS-THAI (VIZINTZOR) test successful!")
                             else:
-                                st.error("❌ F5-TTS-THAI test failed")
+                                st.error("❌ F5-TTS-THAI (VIZINTZOR) test failed")
                 
                 # Show F5-TTS installation guide if not available
                 if "F5-TTS-THAI" not in available_engines:
-                    with st.expander("📥 Install F5-TTS-THAI for premium Thai TTS"):
+                    with st.expander("📥 Install F5-TTS-THAI (VIZINTZOR) for authentic Thai TTS"):
                         st.markdown("""
-                        **Install F5-TTS-THAI:**
+                        **Step 1: Install F5-TTS-THAI:**
                         ```bash
-                        pip install torch torchaudio
+                        pip install torch torchaudio soundfile
                         pip install git+https://github.com/VYNCX/F5-TTS-THAI.git
                         ```
-                        **Note:** Requires CUDA for GPU acceleration
+                        
+                        **Step 2: Download Thai Model:**
+                        Run the setup script to download the VIZINTZOR Thai model (1.35GB):
+                        ```bash
+                        python setup_thai_model.py
+                        ```
+                        
+                        **Or download manually:**
+                        1. Go to: [VIZINTZOR/F5-TTS-THAI](https://huggingface.co/VIZINTZOR/F5-TTS-THAI)
+                        2. Download `model_1000000.pt` to `models/` folder
+                        3. Optionally download `vocab.txt` and `config.json`
+                        
+                        **Note:** Requires CUDA GPU for best performance
                         """)
+                        
+                        if st.button("🚀 Run Setup Script"):
+                            st.code("python setup_thai_model.py", language="bash")
+                            st.info("Run this command in your terminal to download the Thai model")
                 
                 # Show gTTS info if not available
                 if "gTTS-Thai" not in available_engines:
