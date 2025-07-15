@@ -3,6 +3,7 @@ streamlit>=1.28.0
 transformers>=4.30.0
 pydub>=0.25.1
 tqdm>=4.65.0
+python-dotenv>=1.0.0
 
 # Audio processing
 sounddevice>=0.4.6

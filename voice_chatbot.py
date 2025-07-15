@@ -10,6 +10,7 @@ from io import BytesIO
 import pandas as pd
 from openai import OpenAI
 
+
 # Import your ASR pipeline
 from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
 
@@ -68,6 +69,15 @@ except ImportError:
     RECORDING_AVAILABLE = False
     st.warning("Audio recording not available. Install with: pip install sounddevice soundfile")
 
+# Add dotenv import to load .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Load environment variables from .env file
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+    st.warning("python-dotenv not installed. Install with: pip install python-dotenv")
+    
 
 class OpenRouterLLM:
     """Interface for OpenRouter API"""
