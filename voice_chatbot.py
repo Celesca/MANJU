@@ -521,28 +521,87 @@ class F5TTSThai:
         self.model = None
         self.infer_function = None
         self.available = False
+        self.thai_ref_audio = None
+        self.thai_ref_text = "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย ยินดีให้บริการครับ"
         
         if F5_TTS_AVAILABLE:
             try:
                 self._initialize_model()
+                self._prepare_thai_reference()
             except Exception as e:
                 # Silently fail and use fallback
                 self.available = False
     
+    def _prepare_thai_reference(self):
+        """Create proper Thai reference audio for authentic Thai voice"""
+        try:
+            import tempfile
+            import os
+            
+            # Create temp directory if it doesn't exist
+            os.makedirs("temp", exist_ok=True)
+            
+            ref_audio_path = os.path.join("temp", "thai_reference.wav")
+            
+            # Only create if it doesn't exist
+            if not os.path.exists(ref_audio_path):
+                try:
+                    # Create Thai reference audio using gTTS
+                    from gtts import gTTS
+                    
+                    # Use a longer Thai reference text for better voice quality
+                    tts = gTTS(text=self.thai_ref_text, lang='th', slow=False)
+                    temp_mp3 = os.path.join("temp", "thai_ref_temp.mp3")
+                    tts.save(temp_mp3)
+                    
+                    # Convert MP3 to WAV if soundfile is available
+                    try:
+                        import soundfile as sf
+                        data, samplerate = sf.read(temp_mp3)
+                        sf.write(ref_audio_path, data, samplerate)
+                        os.remove(temp_mp3)  # Clean up temp MP3
+                        self.thai_ref_audio = ref_audio_path
+                        print(f"✅ Thai reference audio created: {ref_audio_path}")
+                    except ImportError:
+                        # Fallback: use MP3 file directly (rename it)
+                        mp3_path = ref_audio_path.replace('.wav', '.mp3')
+                        os.rename(temp_mp3, mp3_path)
+                        self.thai_ref_audio = mp3_path
+                        print(f"✅ Thai reference audio created: {mp3_path}")
+                        
+                except Exception as e:
+                    print(f"Warning: Could not create Thai reference audio: {e}")
+                    self.thai_ref_audio = None
+            else:
+                self.thai_ref_audio = ref_audio_path
+                print(f"✅ Using existing Thai reference audio: {ref_audio_path}")
+                
+        except Exception as e:
+            print(f"Warning: Thai reference preparation failed: {e}")
+            self.thai_ref_audio = None
+    
     def _initialize_model(self):
-        """Initialize the F5-TTS model"""
+        """Initialize the F5-TTS model with proper Thai configuration"""
         try:
             # Use the globally imported variables
             
-            # Method 1: Try class-based approach (API)
+            # Method 1: Try class-based approach (API) with explicit Thai model
             if F5TTS_CLASS is not None:
                 try:
-                    self.model = F5TTS_CLASS()
+                    # Load the specific Thai fine-tuned model
+                    self.model = F5TTS_CLASS.from_pretrained("VIZINTZOR/F5-TTS-THAI")
                     self.available = True
-                    st.success("✅ F5-TTS-THAI initialized via API class")
+                    st.success("✅ F5-TTS-THAI (VIZINTZOR) initialized via API class")
                     return
                 except Exception as e:
-                    st.warning(f"F5-TTS API initialization failed: {str(e)}")
+                    try:
+                        # Fallback to default initialization
+                        self.model = F5TTS_CLASS()
+                        self.available = True
+                        st.success("✅ F5-TTS-THAI initialized via API class (default)")
+                        return
+                    except Exception as e2:
+                        st.warning(f"F5-TTS API initialization failed: {str(e)} / {str(e2)}")
             
             # Method 2: Try function-based approach
             if F5TTS_INFER is not None:
@@ -576,7 +635,7 @@ class F5TTSThai:
         return self.available
     
     def speak(self, text: str, ref_audio: str = None, ref_text: str = None, save_file: str = None) -> bool:
-        """Convert text to speech using F5-TTS-THAI"""
+        """Convert text to speech using F5-TTS-THAI with proper Thai voice configuration"""
         if not self.is_available():
             return False
         
@@ -592,15 +651,27 @@ class F5TTSThai:
             return False
         
         try:
-            st.info("🔊 F5-TTS-THAI: Generating high-quality Thai speech...")
+            st.info("🔊 F5-TTS-THAI: Generating authentic Thai speech...")
             
-            # Prepare default reference if not provided
-            if ref_audio is None or ref_text is None:
-                # Use a default Thai reference (you can customize this)
-                ref_text = ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย"
-                # For now, we'll use the input text as reference if no audio is provided
-                if ref_audio is None:
-                    ref_audio = None  # F5-TTS can work without reference audio
+            # Use Thai reference audio and text for authentic Thai voice
+            use_ref_audio = ref_audio or self.thai_ref_audio
+            use_ref_text = ref_text or self.thai_ref_text
+            
+            # If we still don't have reference audio, create it on-the-fly
+            if use_ref_audio is None and GTTS_AVAILABLE:
+                try:
+                    temp_ref_obj = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+                    temp_ref_file = temp_ref_obj.name
+                    temp_ref_obj.close()
+                    
+                    from gtts import gTTS
+                    ref_tts = gTTS(text=use_ref_text, lang="th")
+                    ref_tts.save(temp_ref_file)
+                    use_ref_audio = temp_ref_file
+                    
+                    st.info("📁 Created temporary Thai reference audio")
+                except Exception as e:
+                    st.warning(f"Could not create temporary Thai reference: {e}")
             
             # Determine output file
             if save_file is None:
@@ -614,61 +685,44 @@ class F5TTSThai:
             # Try different F5-TTS approaches
             success = False
             
-            # Method 1: Try API-based approach
+            # Method 1: Try API-based approach with Thai configuration
             if self.model is not None:
                 try:
-                    # Use F5TTS API with correct parameters
-                    # F5TTS.infer() requires ref_file parameter
-                    audio_data = None
+                    st.info(f"🎤 Using Thai reference: {use_ref_text[:50]}...")
                     
-                    # Create a temporary reference file if ref_audio is not provided
-                    temp_ref_file = None
-                    if ref_audio is None:
-                        # Create a simple reference audio file (silence or text-to-speech of ref_text)
-                        try:
-                            # Try to create a temporary reference using gTTS
-                            if GTTS_AVAILABLE:
-                                temp_ref_obj = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
-                                temp_ref_file = temp_ref_obj.name
-                                temp_ref_obj.close()
-                                
-                                ref_tts = gTTS(text=ref_text or "สวัสดี", lang="th")
-                                ref_tts.save(temp_ref_file)
-                                ref_audio = temp_ref_file
-                        except Exception:
-                            # If that fails, we'll have to skip this method
-                            raise Exception("ref_file is required but not provided and cannot create temporary reference")
-                    
-                    # Try gen_text parameter first
+                    # Try gen_text parameter first with Thai-specific configuration
                     try:
                         audio_data = self.model.infer(
-                            gen_text=text,  # Primary parameter name
-                            ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
-                            ref_file=ref_audio,  # Required parameter
-                            remove_silence=True
+                            gen_text=text,  # Text to synthesize
+                            ref_text=use_ref_text,  # Thai reference text
+                            ref_file=use_ref_audio,  # Thai reference audio
+                            remove_silence=True,
+                            # Thai-specific parameters for better voice quality
+                            speed=0.8,  # Slower speed for clearer Thai pronunciation
+                            nfe_step=32,  # Number of generation steps
+                            cfg_strength=2.0,  # Classifier-free guidance strength
+                            sway_sampling_coef=-1.0  # Sway sampling coefficient
                         )
                     except TypeError as e:
                         if "unexpected keyword argument" in str(e):
-                            # Try alternative parameter names
+                            # Try alternative parameter names without Thai-specific params
                             if "gen_text" in str(e):
                                 # Try with 'text' parameter
                                 audio_data = self.model.infer(
                                     text=text,
-                                    ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
-                                    ref_file=ref_audio,
+                                    ref_text=use_ref_text,
+                                    ref_file=use_ref_audio,
                                     remove_silence=True
                                 )
                             else:
-                                raise e
+                                # Try minimal parameters
+                                audio_data = self.model.infer(
+                                    gen_text=text,
+                                    ref_text=use_ref_text,
+                                    ref_file=use_ref_audio
+                                )
                         else:
                             raise e
-                    
-                    # Clean up temporary reference file
-                    if temp_ref_file and os.path.exists(temp_ref_file):
-                        try:
-                            os.unlink(temp_ref_file)
-                        except:
-                            pass
                     
                     # Save audio
                     if audio_data is not None:
