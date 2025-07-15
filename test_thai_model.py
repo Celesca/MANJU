@@ -60,7 +60,15 @@ def test_thai_model():
         try:
             from f5_tts.model import DiT
             from f5_tts.infer.utils_infer import load_model
-            from huggingface_hub import cached_path
+            try:
+                from huggingface_hub import hf_hub_download
+                HF_DOWNLOAD_FUNC = hf_hub_download
+            except ImportError:
+                try:
+                    from huggingface_hub import cached_path
+                    HF_DOWNLOAD_FUNC = cached_path
+                except ImportError:
+                    HF_DOWNLOAD_FUNC = None
             print("✅ F5TTS components available (DiT model and load_model)")
             
             # F5-TTS model configuration for Thai (following VIZINTZOR config)
@@ -86,11 +94,24 @@ def test_thai_model():
             
             if not vocab_file:
                 print("📁 Vocab file not found locally, trying HuggingFace...")
-                try:
-                    vocab_file = str(cached_path("hf://VIZINTZOR/F5-TTS-THAI/vocab.txt"))
-                    print(f"✅ Downloaded vocab: {vocab_file}")
-                except Exception as e:
-                    print(f"⚠️ Vocab download failed: {e}")
+                if HF_DOWNLOAD_FUNC is not None:
+                    try:
+                        # Use newer hf_hub_download if available
+                        if HF_DOWNLOAD_FUNC.__name__ == 'hf_hub_download':
+                            vocab_file = HF_DOWNLOAD_FUNC(
+                                repo_id="VIZINTZOR/F5-TTS-THAI",
+                                filename="vocab.txt",
+                                local_dir="./models"
+                            )
+                        else:
+                            # Use older cached_path function
+                            vocab_file = str(HF_DOWNLOAD_FUNC("hf://VIZINTZOR/F5-TTS-THAI/vocab.txt"))
+                        print(f"✅ Downloaded vocab: {vocab_file}")
+                    except Exception as e:
+                        print(f"⚠️ Vocab download failed: {e}")
+                        vocab_file = None
+                else:
+                    print("⚠️ HuggingFace Hub not available for vocab download")
                     vocab_file = None
             
             # Load the Thai model using proper F5-TTS approach
@@ -194,16 +215,17 @@ def test_audio_generation():
             print(f"🔄 Generating audio for: '{test_text}'")
             output_file = "test_thai_output.wav"
             
-            success = thai_tts.speak(test_text, save_file=output_file)
+            # Use the correct speak method signature
+            result_path = thai_tts.speak(test_text, output_path=output_file)
             
-            if success and os.path.exists(output_file):
-                size_kb = os.path.getsize(output_file) / 1024
+            if result_path and os.path.exists(result_path):
+                size_kb = os.path.getsize(result_path) / 1024
                 print(f"✅ Audio generated successfully! ({size_kb:.1f} KB)")
-                print(f"📁 Saved as: {output_file}")
+                print(f"📁 Saved as: {result_path}")
                 
                 # Clean up
                 try:
-                    os.remove(output_file)
+                    os.remove(result_path)
                     print("🗑️  Test file cleaned up")
                 except:
                     pass

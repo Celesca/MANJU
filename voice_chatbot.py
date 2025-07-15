@@ -534,6 +534,7 @@ class F5TTSThai:
     def __init__(self):
         # Always initialize all attributes first to prevent AttributeError
         self.model = None
+        self.vocoder = None
         self.infer_function = None
         self.available = False
         self.thai_ref_audio = None
@@ -656,7 +657,15 @@ class F5TTSThai:
                     
                     # Import necessary F5-TTS components locally
                     import torch
-                    from huggingface_hub import cached_path
+                    try:
+                        from huggingface_hub import hf_hub_download
+                        HF_DOWNLOAD_FUNC = hf_hub_download
+                    except ImportError:
+                        try:
+                            from huggingface_hub import cached_path
+                            HF_DOWNLOAD_FUNC = cached_path
+                        except ImportError:
+                            HF_DOWNLOAD_FUNC = None
                     
                     # F5-TTS model configuration for Thai (following VIZINTZOR config)
                     F5TTS_model_cfg = dict(
@@ -672,11 +681,24 @@ class F5TTSThai:
                     vocab_file = self.vocab_path
                     if not vocab_file or not os.path.exists(vocab_file):
                         # Try to download from HuggingFace
-                        try:
-                            vocab_file = str(cached_path("hf://VIZINTZOR/F5-TTS-THAI/vocab.txt"))
-                            st.info(f"📁 Downloaded vocab from HuggingFace: {vocab_file}")
-                        except Exception as e:
-                            st.warning(f"Could not download vocab file: {e}")
+                        if HF_DOWNLOAD_FUNC is not None:
+                            try:
+                                # Use newer hf_hub_download if available
+                                if HF_DOWNLOAD_FUNC == hf_hub_download:
+                                    vocab_file = HF_DOWNLOAD_FUNC(
+                                        repo_id="VIZINTZOR/F5-TTS-THAI",
+                                        filename="vocab.txt",
+                                        local_dir="./models"
+                                    )
+                                else:
+                                    # Use older cached_path function
+                                    vocab_file = str(HF_DOWNLOAD_FUNC("hf://VIZINTZOR/F5-TTS-THAI/vocab.txt"))
+                                st.info(f"📁 Downloaded vocab from HuggingFace: {vocab_file}")
+                            except Exception as e:
+                                st.warning(f"Could not download vocab file: {e}")
+                                vocab_file = None
+                        else:
+                            st.warning("HuggingFace Hub not available for vocab download")
                             vocab_file = None
                     
                     # Load the Thai model using proper F5-TTS approach
@@ -687,6 +709,15 @@ class F5TTSThai:
                         vocab_file=vocab_file,
                         use_ema=True
                     )
+                    
+                    # Try to load vocoder if available
+                    self.vocoder = None
+                    try:
+                        from f5_tts.infer.utils_infer import load_vocoder
+                        self.vocoder = load_vocoder()
+                        st.info("✅ Vocoder loaded successfully")
+                    except Exception as e:
+                        st.info(f"ℹ️ Vocoder not loaded (using default): {e}")
                     
                     self.available = True
                     st.success("✅ F5-TTS-THAI (VIZINTZOR) loaded with Thai checkpoint!")
@@ -753,6 +784,7 @@ class F5TTSThai:
             import soundfile as sf
             import torch
             import torchaudio
+            import numpy as np
         except ImportError as e:
             st.error(f"Missing required dependencies for F5-TTS: {str(e)}")
             return False
@@ -792,24 +824,77 @@ class F5TTSThai:
             # Try different F5-TTS approaches with Thai model
             success = False
             
-            # Method 1: Try API-based approach with Thai model
-            if self.model is not None:
+            # Method 1: Try proper F5-TTS inference with Thai model
+            if self.model is not None and F5TTS_INFER is not None:
                 try:
-                    st.info(f"🎤 Using Thai model with reference: {use_ref_text[:50]}...")
+                    st.info(f"🎤 Using Thai model with proper inference: {use_ref_text[:50]}...")
                     
-                    # Use Thai-optimized parameters
-                    audio_data = self.model.infer(
-                        gen_text=text,  # Text to synthesize
-                        ref_text=use_ref_text,  # Thai reference text
-                        ref_file=use_ref_audio,  # Thai reference audio
-                        remove_silence=True,
-                        speed=0.9,  # Slightly slower for clearer Thai
-                        nfe_step=32,  # Good balance of quality and speed
-                        cfg_strength=2.0,  # Classifier-free guidance
-                        sway_sampling_coef=-1.0  # Sway sampling for better quality
+                    # Use the proper F5-TTS inference function with Thai model
+                    final_wave, final_sample_rate, _ = F5TTS_INFER(
+                        ref_audio=use_ref_audio,
+                        ref_text=use_ref_text,
+                        gen_text=text,
+                        model=self.model,
+                        vocoder=getattr(self, 'vocoder', None),  # Use vocoder if available
+                        cross_fade_duration=0.15,
+                        nfe_step=32,
+                        speed=0.9,
+                        cfg_strength=2.0,
+                        target_rms=0.1,
+                        sway_sampling_coef=-1.0
                     )
                     
                     # Process and save audio
+                    if final_wave is not None:
+                        # Convert to numpy array if needed
+                        if hasattr(final_wave, 'cpu'):
+                            audio_array = final_wave.cpu().numpy()
+                        elif hasattr(final_wave, 'numpy'):
+                            audio_array = final_wave.numpy()
+                        else:
+                            audio_array = final_wave
+                        
+                        # Ensure proper format
+                        audio_array = np.array(audio_array).flatten().astype(np.float32)
+                        audio_array = np.clip(audio_array, -1.0, 1.0)
+                        
+                        # Save with detected or default sample rate
+                        sf.write(output_file, audio_array, int(final_sample_rate))
+                        success = True
+                        st.success("✅ F5-TTS-THAI (VIZINTZOR): Audio generated with proper inference!")
+                    else:
+                        st.warning("Inference returned no audio data")
+                    
+                except Exception as e:
+                    st.warning(f"⚠️ Thai model inference failed: {str(e)}")
+            
+            # Method 2: Try API-based approach with Thai model (fallback)
+            elif self.model is not None:
+                try:
+                    st.info(f"🎤 Trying alternative model API: {use_ref_text[:50]}...")
+                    
+                    # Try different API methods if they exist
+                    if hasattr(self.model, 'sample'):
+                        # Some F5-TTS models use sample method
+                        audio_data = self.model.sample(
+                            text=text,
+                            ref_audio=use_ref_audio,
+                            ref_text=use_ref_text,
+                            speed=0.9,
+                            nfe_step=32
+                        )
+                    elif hasattr(self.model, 'generate'):
+                        # Some models use generate method
+                        audio_data = self.model.generate(
+                            text=text,
+                            ref_audio=use_ref_audio,
+                            ref_text=use_ref_text
+                        )
+                    else:
+                        st.warning("No known inference methods available on model")
+                        audio_data = None
+                    
+                    # Process and save audio if we got something
                     if audio_data is not None:
                         # Convert to numpy array if needed
                         if hasattr(audio_data, 'cpu'):
@@ -840,14 +925,14 @@ class F5TTSThai:
                         # Save with detected or default sample rate
                         sf.write(output_file, audio_array, int(sample_rate))
                         success = True
-                        st.success("✅ F5-TTS-THAI (VIZINTZOR): Audio generated with Thai model!")
+                        st.success("✅ F5-TTS-THAI (VIZINTZOR): Audio generated with alternative API!")
                     else:
-                        st.warning("API returned no audio data")
+                        st.warning("Alternative API returned no audio data")
                     
                 except Exception as e:
-                    st.warning(f"⚠️ Thai model generation failed: {str(e)}")
+                    st.warning(f"⚠️ Alternative API failed: {str(e)}")
             
-            # Method 2: Try CLI approach with Thai model path
+            # Method 3: Try CLI approach with Thai model path
             if not success and F5TTS_CLI_AVAILABLE and self.model_path:
                 try:
                     st.info("🔄 Using F5-TTS CLI with Thai model...")
@@ -907,7 +992,7 @@ class F5TTSThai:
                 except Exception as e:
                     st.warning(f"⚠️ CLI method with Thai model failed: {str(e)}")
             
-            # Method 3: Fallback to standard CLI without model path
+            # Method 4: Fallback to standard CLI without model path
             if not success and F5TTS_CLI_AVAILABLE:
                 try:
                     st.info("🔄 Fallback: Using standard F5-TTS CLI...")

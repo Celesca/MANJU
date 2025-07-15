@@ -72,36 +72,57 @@ def download_thai_model():
     print("\n📥 Downloading VIZINTZOR Thai model...")
     
     try:
-        from huggingface_hub import hf_hub_download
-        
-        # Download model checkpoint
-        model_path = hf_hub_download(
-            repo_id="VIZINTZOR/F5-TTS-THAI",
-            filename="model_1000000.pt",
-            local_dir="./models"
-        )
-        print(f"✅ Model downloaded to: {model_path}")
-        
-        # Download vocab file
+        # Try newer hf_hub_download first
         try:
-            vocab_path = hf_hub_download(
+            from huggingface_hub import hf_hub_download
+            
+            # Download model checkpoint
+            model_path = hf_hub_download(
                 repo_id="VIZINTZOR/F5-TTS-THAI",
-                filename="vocab.txt",
+                filename="model_1000000.pt",
                 local_dir="./models"
             )
-            print(f"✅ Vocab downloaded to: {vocab_path}")
-        except Exception as e:
-            print(f"⚠️ Vocab download failed (optional): {e}")
+            print(f"✅ Model downloaded to: {model_path}")
+            
+            # Download vocab file
+            try:
+                vocab_path = hf_hub_download(
+                    repo_id="VIZINTZOR/F5-TTS-THAI",
+                    filename="vocab.txt",
+                    local_dir="./models"
+                )
+                print(f"✅ Vocab downloaded to: {vocab_path}")
+            except Exception as e:
+                print(f"⚠️ Vocab download failed (optional): {e}")
+            
+            return True
+            
+        except ImportError:
+            # Fallback to older cached_path
+            try:
+                from huggingface_hub import cached_path
+                
+                # Download model checkpoint
+                model_path = str(cached_path("hf://VIZINTZOR/F5-TTS-THAI/model_1000000.pt"))
+                print(f"✅ Model downloaded to: {model_path}")
+                
+                # Download vocab file
+                try:
+                    vocab_path = str(cached_path("hf://VIZINTZOR/F5-TTS-THAI/vocab.txt"))
+                    print(f"✅ Vocab downloaded to: {vocab_path}")
+                except Exception as e:
+                    print(f"⚠️ Vocab download failed (optional): {e}")
+                
+                return True
+                
+            except ImportError:
+                print("❌ huggingface_hub not available. Installing...")
+                success = run_command([sys.executable, "-m", "pip", "install", "huggingface_hub"], 
+                                    "Installing huggingface_hub")
+                if success:
+                    return download_thai_model()  # Retry
+                return False
         
-        return True
-        
-    except ImportError:
-        print("❌ huggingface_hub not available. Installing...")
-        success = run_command([sys.executable, "-m", "pip", "install", "huggingface_hub"], 
-                            "Installing huggingface_hub")
-        if success:
-            return download_thai_model()  # Retry
-        return False
     except Exception as e:
         print(f"❌ Model download failed: {e}")
         return False
