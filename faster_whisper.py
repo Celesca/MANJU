@@ -1,6 +1,5 @@
 import os
 from pydub import AudioSegment
-from transformers import pipeline
 import torch
 import csv
 import time
@@ -9,6 +8,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple, Optional, Dict, Any, Union
 from dataclasses import dataclass
+import numpy as np
 
 # Force PyTorch backend to avoid TensorFlow issues
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -17,8 +17,8 @@ os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 @dataclass
 class AudioConfig:
     """Configuration for audio processing"""
-    chunk_length_ms: int = 27000
-    overlap_ms: int = 2000
+    chunk_length_ms: int = 30000  # Increased for faster-whisper (30 seconds is optimal)
+    overlap_ms: int = 1000  # Reduced overlap for speed
     min_chunk_length_ms: int = 1000
     sample_rate: int = 16000
     channels: int = 1
@@ -27,20 +27,28 @@ class AudioConfig:
 @dataclass
 class ProcessingConfig:
     """Configuration for processing pipeline"""
-    model_name: str = "nectec/Pathumma-whisper-th-large-v3"
+    model_name: str = "large-v3"  # Use standard model name for faster-whisper
+    custom_model_path: Optional[str] = None  # Path to converted Thai model
     language: str = "th"
     task: str = "transcribe"
-    batch_size: int = 4
-    max_workers: int = 2
-    use_gpu: bool = True
     
-    # Faster-whisper optimization options
-    use_faster_whisper: bool = True  # Enable faster-whisper for 2-4x speed improvement
-    faster_whisper_model: str = "large-v3"  # Model for faster-whisper (use large-v3 for Thai)
+    # faster-whisper specific configs
+    device: str = "cuda"  # "cuda", "cpu", or "auto"
     compute_type: str = "int8_float16"  # "int8", "int8_float16", "float16", "float32"
     beam_size: int = 1  # Reduced beam size for speed (1-5, lower is faster)
+    best_of: int = 1  # Reduced for speed
+    patience: float = 1.0
+    temperature: float = 0.0
+    
+    # Batch processing (faster-whisper doesn't support batching like transformers)
+    max_workers: int = 1  # Use 1 for GPU, more for CPU
     use_vad: bool = True  # Voice Activity Detection for speed
     vad_threshold: float = 0.35
+    
+    # Performance optimizations
+    no_speech_threshold: float = 0.6
+    log_prob_threshold: float = -1.0
+    compression_ratio_threshold: float = 2.4
 
 
 class AudioProcessor:
@@ -51,7 +59,7 @@ class AudioProcessor:
     
     def preprocess_audio(self, audio_path: str) -> List[str]:
         """
-        Preprocess audio file into overlapping chunks
+        Preprocess audio file into overlapping chunks optimized for faster-whisper
         
         Args:
             audio_path: Path to the audio file
@@ -77,6 +85,7 @@ class AudioProcessor:
                 else:
                     raise e
             
+            # For faster-whisper, we can use larger chunks for better performance
             step_size = self.config.chunk_length_ms - self.config.overlap_ms
             chunk_files = []
             
@@ -108,106 +117,89 @@ class AudioProcessor:
                 pass
 
 
-class WhisperASR:
-    """Whisper ASR pipeline wrapper with faster-whisper support"""
+class FasterWhisperASR:
+    """Faster-Whisper ASR pipeline wrapper - much faster than standard Whisper"""
     
     def __init__(self, config: ProcessingConfig):
         self.config = config
-        self.use_faster_whisper = config.use_faster_whisper
         self._setup_device()
         self._load_model()
     
     def _setup_device(self) -> None:
-        """Setup device and torch dtype"""
-        if self.config.use_gpu and torch.cuda.is_available():
-            self.device = 0 if not self.use_faster_whisper else "cuda"
-            self.torch_dtype = torch.bfloat16
+        """Setup device and compute type"""
+        if self.config.device == "auto":
+            if torch.cuda.is_available():
+                self.device = "cuda"
+            else:
+                self.device = "cpu"
         else:
-            self.device = -1 if not self.use_faster_whisper else "cpu"
-            self.torch_dtype = torch.float32
+            self.device = self.config.device
+        
+        # Adjust compute type based on device
+        if self.device == "cpu":
+            # CPU optimizations
+            if self.config.compute_type in ["int8_float16", "float16"]:
+                self.compute_type = "int8"  # CPU doesn't support float16
+            else:
+                self.compute_type = self.config.compute_type
+        else:
+            # GPU optimizations
+            self.compute_type = self.config.compute_type
+        
+        print(f"🚀 Using device: {self.device} with compute type: {self.compute_type}")
     
     def _load_model(self) -> None:
-        """Load the Whisper model - either faster-whisper or standard"""
-        if self.use_faster_whisper:
-            self._load_faster_whisper_model()
-        else:
-            self._load_standard_whisper_model()
-    
-    def _load_faster_whisper_model(self) -> None:
-        """Load faster-whisper model for 2-4x speed improvement"""
+        """Load the faster-whisper model"""
         try:
             from faster_whisper import WhisperModel
         except ImportError:
-            print("⚠️ faster-whisper not found. Install with: pip install faster-whisper")
-            print("Falling back to standard Whisper...")
-            self.use_faster_whisper = False
-            self._load_standard_whisper_model()
-            return
+            raise ImportError(
+                "faster-whisper not found. Install with: pip install faster-whisper\n"
+                "This will provide 2-4x speed improvement over standard Whisper!"
+            )
         
-        # Adjust compute type based on device
-        compute_type = self.config.compute_type
-        if self.device == "cpu" and compute_type in ["int8_float16", "float16"]:
-            compute_type = "int8"  # CPU doesn't support float16
+        # Check if we have a custom Thai model path
+        if self.config.custom_model_path and os.path.exists(self.config.custom_model_path):
+            model_name_or_path = self.config.custom_model_path
+            print(f"📦 Loading custom Thai model from: {model_name_or_path}")
+        else:
+            model_name_or_path = self.config.model_name
+            print(f"📦 Loading standard model: {model_name_or_path}")
+            print("💡 To use the Thai NECTEC model with faster-whisper:")
+            print("   1. Convert it to CTranslate2 format using ct2-transformers-converter")
+            print("   2. Set custom_model_path in ProcessingConfig")
         
-        print(f"🚀 Loading faster-whisper model: {self.config.faster_whisper_model}")
-        print(f"   Device: {self.device}, Compute type: {compute_type}")
-        
+        # Load model with optimizations
         self.model = WhisperModel(
-            self.config.faster_whisper_model,
+            model_name_or_path,
             device=self.device,
-            compute_type=compute_type,
+            compute_type=self.compute_type,
             cpu_threads=4 if self.device == "cpu" else 0,
-            num_workers=1,
+            num_workers=1,  # faster-whisper works best with 1 worker per model
         )
         
-        print("✅ faster-whisper model loaded successfully!")
-        print("💡 Expected 2-4x speed improvement over standard Whisper")
+        print(f"✅ Model loaded successfully with {self.compute_type} precision")
     
-    def _load_standard_whisper_model(self) -> None:
-        """Load standard transformers Whisper model"""
-        print(f"📦 Loading standard Whisper model: {self.config.model_name}")
-        
-        self.pipe = pipeline(
-            task="automatic-speech-recognition",
-            model=self.config.model_name,
-            torch_dtype=self.torch_dtype,
-            device=self.device,
-            batch_size=self.config.batch_size,
-            framework="pt"  # Force PyTorch framework
-        )
-        
-        # Set language and task
-        self.pipe.model.config.forced_decoder_ids = self.pipe.tokenizer.get_decoder_prompt_ids(
-            language=self.config.language, 
-            task=self.config.task
-        )
-        
-        print("✅ Standard Whisper model loaded successfully!")
-    
-    def transcribe_batch(self, audio_files: List[str]) -> List[str]:
+    def transcribe_single(self, audio_file: str) -> str:
         """
-        Transcribe a batch of audio files
+        Transcribe a single audio file
         
         Args:
-            audio_files: List of audio file paths
+            audio_file: Path to audio file
             
         Returns:
-            List of transcriptions
+            Transcription text
         """
-        if self.use_faster_whisper:
-            # faster-whisper doesn't support batching, process sequentially
-            return [self._transcribe_single_faster_whisper(file) for file in audio_files]
-        else:
-            return self._transcribe_batch_standard(audio_files)
-    
-    def _transcribe_single_faster_whisper(self, audio_file: str) -> str:
-        """Transcribe single file with faster-whisper"""
         try:
+            # Configure transcription parameters for speed
             segments, info = self.model.transcribe(
                 audio_file,
                 language=self.config.language,
                 task=self.config.task,
                 beam_size=self.config.beam_size,
+                best_of=self.config.best_of,
+                patience=self.config.patience,
+                temperature=self.config.temperature,
                 vad_filter=self.config.use_vad,
                 vad_parameters=dict(
                     threshold=self.config.vad_threshold,
@@ -215,37 +207,19 @@ class WhisperASR:
                     min_silence_duration_ms=100,
                     speech_pad_ms=30,
                 ) if self.config.use_vad else None,
+                no_speech_threshold=self.config.no_speech_threshold,
+                logprob_threshold=self.config.log_prob_threshold,
+                compression_ratio_threshold=self.config.compression_ratio_threshold,
             )
             
             # Combine all segments
             transcription = " ".join([segment.text.strip() for segment in segments])
+            
             return transcription
             
         except Exception as e:
             print(f"Error transcribing {audio_file}: {e}")
-            return "[ERROR]"
-    
-    def _transcribe_batch_standard(self, audio_files: List[str]) -> List[str]:
-        """Transcribe batch with standard Whisper"""
-        try:
-            batch_results = self.pipe(audio_files)
-            
-            if isinstance(batch_results, list):
-                return [result["text"].strip() for result in batch_results]
-            else:
-                return [batch_results["text"].strip()]
-                
-        except Exception as e:
-            print(f"Error in batch processing: {e}")
-            # Fallback to single file processing
-            transcriptions = []
-            for file_path in audio_files:
-                try:
-                    result = self.pipe(file_path)
-                    transcriptions.append(result["text"].strip())
-                except Exception:
-                    transcriptions.append("[ERROR]")
-            return transcriptions
+            return f"[ERROR: {str(e)}]"
     
     def transcribe_chunks(self, chunk_files: List[str]) -> str:
         """
@@ -259,11 +233,11 @@ class WhisperASR:
         """
         transcriptions = []
         
-        # Process in batches
-        for i in range(0, len(chunk_files), self.config.batch_size):
-            batch_files = chunk_files[i:i+self.config.batch_size]
-            batch_transcriptions = self.transcribe_batch(batch_files)
-            transcriptions.extend(batch_transcriptions)
+        # Process chunks sequentially (faster-whisper is already optimized)
+        for chunk_file in chunk_files:
+            transcription = self.transcribe_single(chunk_file)
+            if transcription and not transcription.startswith("[ERROR"):
+                transcriptions.append(transcription)
         
         return " ".join(transcriptions)
 
@@ -323,8 +297,8 @@ class AudioFileManager:
                 writer.writerow(row)
 
 
-class OverlappingASRPipeline:
-    """Main pipeline for overlapping ASR processing"""
+class FastOverlappingASRPipeline:
+    """Optimized pipeline using faster-whisper for 2-4x speed improvement"""
     
     def __init__(self, 
                  input_path: str,
@@ -335,11 +309,25 @@ class OverlappingASRPipeline:
         self.processing_config = processing_config or ProcessingConfig()
         
         self.audio_processor = AudioProcessor(self.audio_config)
-        self.asr = WhisperASR(self.processing_config)
+        self.asr = FasterWhisperASR(self.processing_config)
         self.file_manager = AudioFileManager(input_path)
         
         self.start_time = None
         self.end_time = None
+        
+        # Print optimization info
+        self._print_optimization_info()
+    
+    def _print_optimization_info(self):
+        """Print information about optimizations being used"""
+        print("🚀 FastOverlappingASRPipeline Optimizations:")
+        print(f"   • faster-whisper engine (2-4x speed improvement)")
+        print(f"   • Device: {self.processing_config.device}")
+        print(f"   • Compute type: {self.processing_config.compute_type}")
+        print(f"   • Beam size: {self.processing_config.beam_size} (lower = faster)")
+        print(f"   • VAD filtering: {'enabled' if self.processing_config.use_vad else 'disabled'}")
+        print(f"   • Optimized chunk size: {self.audio_config.chunk_length_ms}ms")
+        print(f"   • Reduced overlap: {self.audio_config.overlap_ms}ms")
     
     def __call__(self, audio_path: str = None) -> str:
         """
@@ -362,7 +350,17 @@ class OverlappingASRPipeline:
             full_path = self.file_manager.input_path
         
         try:
-            # Create overlapping chunks
+            # For single file transcription, we can often process the whole file at once
+            # if it's under 30 seconds, which is much faster
+            try:
+                # Try direct transcription first (fastest for shorter files)
+                audio = AudioSegment.from_file(full_path)
+                if len(audio) <= 30000:  # 30 seconds or less
+                    return self.asr.transcribe_single(full_path)
+            except:
+                pass
+            
+            # Fall back to chunking for longer files
             chunk_files = self.audio_processor.preprocess_audio(full_path)
             
             if not chunk_files:
@@ -381,7 +379,7 @@ class OverlappingASRPipeline:
     
     def process_single_file(self, filename: str) -> Tuple[str, str]:
         """
-        Process a single audio file
+        Process a single audio file with optimizations
         
         Args:
             filename: Name of the audio file
@@ -392,7 +390,16 @@ class OverlappingASRPipeline:
         full_path = self.file_manager.get_full_path(filename)
         
         try:
-            # Create overlapping chunks
+            # Optimization: Try direct transcription for shorter files
+            try:
+                audio = AudioSegment.from_file(full_path)
+                if len(audio) <= 30000:  # 30 seconds or less - process directly
+                    transcription = self.asr.transcribe_single(full_path)
+                    return filename, transcription
+            except:
+                pass
+            
+            # For longer files, use chunking
             chunk_files = self.audio_processor.preprocess_audio(full_path)
             
             if not chunk_files:
@@ -408,13 +415,6 @@ class OverlappingASRPipeline:
             
         except Exception as e:
             return filename, f"[ERROR: {str(e)}]"
-    
-    def should_use_threading(self) -> bool:
-        """Determine if threading should be used"""
-        # faster-whisper works best without threading due to optimized kernels
-        if hasattr(self.asr, 'use_faster_whisper') and self.asr.use_faster_whisper:
-            return False
-        return not (self.processing_config.use_gpu and torch.cuda.is_available())
     
     def process_all_files(self, output_csv: str = "results.csv") -> Dict[str, Any]:
         """
@@ -436,17 +436,12 @@ class OverlappingASRPipeline:
             print("No audio files found!")
             return {}
         
-        # Determine processing mode
-        use_threading = self.should_use_threading()
-        max_workers = self.processing_config.max_workers if use_threading else 1
+        # For GPU processing with faster-whisper, sequential is often fastest
+        # due to optimized memory usage and compute kernels
+        print(f"🔄 Processing mode: Optimized sequential (faster-whisper)")
         
-        print(f"🔄 Processing mode: {'Multi-threaded' if use_threading else 'Single-threaded'} ({max_workers} workers)")
-        
-        # Process files
-        if use_threading and len(wav_files) > 1:
-            self._process_with_threading(wav_files, max_workers)
-        else:
-            self._process_sequential(wav_files)
+        # Process files sequentially (optimal for faster-whisper)
+        self._process_sequential_optimized(wav_files)
         
         # Save results
         print(f"\n💾 Saving results to {output_csv}...")
@@ -456,23 +451,19 @@ class OverlappingASRPipeline:
         self.end_time = time.perf_counter()
         return self._get_statistics(output_csv)
     
-    def _process_with_threading(self, wav_files: List[str], max_workers: int) -> None:
-        """Process files using threading"""
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(self.process_single_file, filename): filename 
-                      for filename in wav_files}
-            
-            for future in tqdm(futures, desc="Processing files", unit="file"):
-                filename, transcription = future.result()
-                self.file_manager.add_result(filename, transcription)
-                tqdm.write(f"✅ {filename}: {transcription[:80]}{'...' if len(transcription) > 80 else ''}")
-    
-    def _process_sequential(self, wav_files: List[str]) -> None:
-        """Process files sequentially"""
+    def _process_sequential_optimized(self, wav_files: List[str]) -> None:
+        """Process files sequentially with faster-whisper optimizations"""
         for filename in tqdm(wav_files, desc="Processing files", unit="file"):
+            start_file_time = time.perf_counter()
+            
             filename_result, transcription = self.process_single_file(filename)
             self.file_manager.add_result(filename, transcription)
-            tqdm.write(f"✅ {filename}: {transcription[:80]}{'...' if len(transcription) > 80 else ''}")
+            
+            end_file_time = time.perf_counter()
+            file_time = end_file_time - start_file_time
+            
+            # Show progress with timing
+            tqdm.write(f"✅ {filename} ({file_time:.2f}s): {transcription[:80]}{'...' if len(transcription) > 80 else ''}")
     
     def _get_statistics(self, output_csv: str) -> Dict[str, Any]:
         """Get processing statistics"""
@@ -485,10 +476,13 @@ class OverlappingASRPipeline:
             "total_files": num_files,
             "avg_time_per_file": elapsed_time / num_files if num_files > 0 else 0,
             "optimizations": [
-                f"Batch processing (batch_size={self.processing_config.batch_size})",
-                "Optimized audio preprocessing",
-                f"Smart threading ({'enabled' if self.should_use_threading() else 'disabled for GPU'})",
-                "Efficient temporary file handling"
+                "faster-whisper engine (2-4x speed boost)",
+                f"Optimized compute type ({self.processing_config.compute_type})",
+                f"VAD filtering ({'enabled' if self.processing_config.use_vad else 'disabled'})",
+                f"Reduced beam size ({self.processing_config.beam_size})",
+                "Direct processing for short files",
+                "Optimized chunking strategy",
+                f"Device: {self.processing_config.device}"
             ]
         }
         
@@ -504,61 +498,63 @@ class OverlappingASRPipeline:
         return stats
 
 
-# Example usage
+# Compatibility wrapper - maintains the same interface as the original
+class OverlappingASRPipeline(FastOverlappingASRPipeline):
+    """
+    Compatibility wrapper that maintains the same interface as the original
+    but uses faster-whisper under the hood for improved performance
+    """
+    pass
+
+
+# Helper function to convert NECTEC model to faster-whisper format
+def convert_nectec_model_to_faster_whisper():
+    """
+    Instructions for converting the NECTEC Thai model to faster-whisper format
+    """
+    print("🔧 To convert the NECTEC Thai model for faster-whisper:")
+    print("1. Install converter: pip install ct2-transformers-converter")
+    print("2. Convert model:")
+    print("   ct2-transformers-converter --model nectec/Pathumma-whisper-th-large-v3 \\")
+    print("                              --output_dir ./models/nectec-thai-faster-whisper \\")
+    print("                              --copy_files tokenizer.json preprocessor_config.json \\")
+    print("                              --quantization int8_float16")
+    print("3. Use the converted model:")
+    print("   config = ProcessingConfig(custom_model_path='./models/nectec-thai-faster-whisper')")
+
+
+# Example usage with optimized settings
 if __name__ == "__main__":
-    # Configuration
+    # Configuration optimized for speed
     input_folder = "path/to/your/audio/files"  # Change this to your audio folder
     
-    # Custom configurations for faster-whisper (RECOMMENDED for speed)
+    # Speed-optimized audio config
     audio_config = AudioConfig(
-        chunk_length_ms=30000,  # Larger chunks work better with faster-whisper
-        overlap_ms=1000,  # Reduced overlap for speed
+        chunk_length_ms=30000,  # Larger chunks for faster-whisper
+        overlap_ms=1000,  # Reduced overlap
         sample_rate=16000
     )
     
-    # Faster-whisper configuration (2-4x speed improvement)
+    # Speed-optimized processing config
     processing_config = ProcessingConfig(
-        # Standard Whisper settings (fallback)
-        model_name="nectec/Pathumma-whisper-th-large-v3",
-        batch_size=4,
-        max_workers=2,
-        
-        # Faster-whisper settings (recommended)
-        use_faster_whisper=True,  # Enable for major speed boost
-        faster_whisper_model="large-v3",  # Use large-v3 for Thai (good balance)
-        compute_type="int8_float16",  # Best for GPU, use "int8" for CPU
-        beam_size=1,  # Lower = faster (1-5)
-        use_vad=True,  # Voice Activity Detection for speed
-        vad_threshold=0.35,
-        
-        language="th",
-        use_gpu=True
+        model_name="large-v3",  # Use large-v3 or convert NECTEC model
+        custom_model_path=None,  # Set to converted NECTEC model path if available
+        device="cuda",  # Use "cpu" if no GPU
+        compute_type="int8_float16",  # Best balance of speed/quality for GPU
+        beam_size=1,  # Fastest beam size
+        use_vad=True,  # Enable VAD for speed
+        language="th"
     )
     
-    print("🚀 Performance Comparison:")
-    print("   Standard Whisper: ~2-4 seconds per file")
-    print("   faster-whisper:   ~0.5-1 seconds per file (2-4x faster!)")
-    print("   With VAD + int8:  Even faster on suitable hardware")
-    print()
+    # Print conversion instructions for NECTEC model
+    convert_nectec_model_to_faster_whisper()
     
     # Create and run pipeline
-    pipeline = OverlappingASRPipeline(
-        input_folder=input_folder,
+    pipeline = FastOverlappingASRPipeline(
+        input_path=input_folder,
         audio_config=audio_config,
         processing_config=processing_config
     )
     
     # Process all files
     stats = pipeline.process_all_files("output_results.csv")
-    
-    # Additional tips for maximum speed
-    print("\n💡 Speed Optimization Tips:")
-    print("1. Install faster-whisper: pip install faster-whisper")
-    print("2. Use int8_float16 compute type for GPU")
-    print("3. Set beam_size=1 for maximum speed")
-    print("4. Enable VAD to skip silent parts")
-    print("5. Use larger chunk sizes (30s) to reduce overhead")
-    if torch.cuda.is_available():
-        print("6. ✅ CUDA detected - you should see significant speedup!")
-    else:
-        print("6. Consider using GPU for even better performance")
