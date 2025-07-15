@@ -671,13 +671,72 @@ class F5TTSThai:
                             pass
                     
                     # Save audio
-                    if hasattr(audio_data, 'cpu'):
-                        audio_data = audio_data.cpu().numpy()
-                    
-                    # Write to file (assuming 22050 Hz sample rate)
-                    sf.write(output_file, audio_data, 22050)
-                    success = True
-                    st.success("✅ F5-TTS-THAI: Audio generated successfully!")
+                    if audio_data is not None:
+                        # Handle different audio data formats
+                        try:
+                            # Convert tensor to numpy if needed
+                            if hasattr(audio_data, 'cpu'):
+                                audio_data = audio_data.cpu().numpy()
+                            elif hasattr(audio_data, 'numpy'):
+                                audio_data = audio_data.numpy()
+                            
+                            # Handle different shapes and types
+                            if isinstance(audio_data, (list, tuple)):
+                                # If it's a list/tuple, take the first element (audio data)
+                                audio_data = audio_data[0] if len(audio_data) > 0 else audio_data
+                                if hasattr(audio_data, 'cpu'):
+                                    audio_data = audio_data.cpu().numpy()
+                                elif hasattr(audio_data, 'numpy'):
+                                    audio_data = audio_data.numpy()
+                            
+                            # Ensure audio_data is a proper numpy array
+                            if not isinstance(audio_data, np.ndarray):
+                                audio_data = np.array(audio_data)
+                            
+                            # Handle multi-dimensional arrays
+                            if audio_data.ndim > 1:
+                                # If 2D, flatten or take first channel
+                                if audio_data.shape[0] == 1:
+                                    audio_data = audio_data.flatten()
+                                elif audio_data.shape[1] == 1:
+                                    audio_data = audio_data.flatten()
+                                else:
+                                    # Take first channel if multiple channels
+                                    audio_data = audio_data[:, 0] if audio_data.shape[1] < audio_data.shape[0] else audio_data[0, :]
+                            
+                            # Ensure it's 1D
+                            audio_data = audio_data.flatten()
+                            
+                            # Normalize audio data if needed
+                            if audio_data.dtype != np.float32:
+                                audio_data = audio_data.astype(np.float32)
+                            
+                            # Clamp values to valid range
+                            audio_data = np.clip(audio_data, -1.0, 1.0)
+                            
+                            # Write to file with proper sample rate detection
+                            try:
+                                # Try common F5-TTS sample rates
+                                sample_rates = [24000, 22050, 16000, 44100]
+                                for sr in sample_rates:
+                                    try:
+                                        sf.write(output_file, audio_data, sr)
+                                        break
+                                    except Exception:
+                                        continue
+                                else:
+                                    # Default fallback
+                                    sf.write(output_file, audio_data, 22050)
+                                
+                                success = True
+                                st.success("✅ F5-TTS-THAI: Audio generated successfully!")
+                            except Exception as save_error:
+                                st.error(f"Failed to save audio: {save_error}")
+                                
+                        except Exception as process_error:
+                            st.warning(f"Audio processing failed: {process_error}")
+                    else:
+                        st.warning("API returned no audio data")
                     
                 except Exception as e:
                     # Clean up temporary reference file on error
@@ -723,19 +782,50 @@ class F5TTSThai:
                     
                     # If we get audio data back, save it
                     if result is not None:
-                        if hasattr(result, 'cpu'):
-                            result = result.cpu().numpy()
-                        
-                        # Save the audio result
-                        if isinstance(result, (list, tuple)) and len(result) > 0:
-                            audio_data = result[0] if isinstance(result[0], np.ndarray) else result
-                        else:
+                        try:
+                            # Handle different result formats
                             audio_data = result
-                        
-                        # Write to file
-                        sf.write(output_file, audio_data, 22050)
-                        success = True
-                        st.success("✅ F5-TTS-THAI: Audio generated via inference function!")
+                            
+                            # Convert tensor to numpy if needed
+                            if hasattr(audio_data, 'cpu'):
+                                audio_data = audio_data.cpu().numpy()
+                            elif hasattr(audio_data, 'numpy'):
+                                audio_data = audio_data.numpy()
+                            
+                            # Handle different shapes and types
+                            if isinstance(audio_data, (list, tuple)):
+                                # If it's a list/tuple, take the first element (audio data)
+                                if len(audio_data) > 0:
+                                    audio_data = audio_data[0] if isinstance(audio_data[0], (np.ndarray, list)) else audio_data
+                                    if hasattr(audio_data, 'cpu'):
+                                        audio_data = audio_data.cpu().numpy()
+                                    elif hasattr(audio_data, 'numpy'):
+                                        audio_data = audio_data.numpy()
+                            
+                            # Ensure audio_data is a proper numpy array
+                            if not isinstance(audio_data, np.ndarray):
+                                audio_data = np.array(audio_data)
+                            
+                            # Handle multi-dimensional arrays
+                            if audio_data.ndim > 1:
+                                audio_data = audio_data.flatten()
+                            
+                            # Ensure proper data type and range
+                            if audio_data.dtype != np.float32:
+                                audio_data = audio_data.astype(np.float32)
+                            
+                            # Clamp values to valid range
+                            audio_data = np.clip(audio_data, -1.0, 1.0)
+                            
+                            # Write to file
+                            sf.write(output_file, audio_data, 22050)
+                            success = True
+                            st.success("✅ F5-TTS-THAI: Audio generated via inference function!")
+                            
+                        except Exception as process_error:
+                            st.warning(f"Function audio processing failed: {process_error}")
+                    else:
+                        st.warning("Inference function returned no data")
                     
                 except Exception as e:
                     st.warning(f"⚠️ Function audio generation failed: {str(e)}")
@@ -771,8 +861,12 @@ class F5TTSThai:
                         '--cfg_strength', '2.0'  # Classifier-free guidance strength
                     ])
                     
-                    # Run F5-TTS command
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    # Set up environment to fix hash seed issue
+                    env = os.environ.copy()
+                    env['PYTHONHASHSEED'] = '0'  # Set to a valid value
+                    
+                    # Run F5-TTS command with proper environment
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
                     
                     # Clean up text file
                     try:
@@ -782,10 +876,15 @@ class F5TTSThai:
                         pass  # Ignore cleanup errors
                     
                     if result.returncode == 0 and os.path.exists(output_file):
-                        success = True
-                        st.success("✅ F5-TTS-THAI: Audio generated via CLI!")
+                        # Verify the output file has content
+                        if os.path.getsize(output_file) > 0:
+                            success = True
+                            st.success("✅ F5-TTS-THAI: Audio generated via CLI!")
+                        else:
+                            st.warning("⚠️ CLI generated empty audio file")
                     else:
-                        st.warning(f"⚠️ CLI audio generation failed: {result.stderr}")
+                        error_msg = result.stderr.strip() if result.stderr else "Unknown CLI error"
+                        st.warning(f"⚠️ CLI audio generation failed: {error_msg}")
                         
                 except Exception as e:
                     st.warning(f"⚠️ CLI method failed: {str(e)}")
