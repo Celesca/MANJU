@@ -44,20 +44,48 @@ try:
     import torch
     import torchaudio
     import soundfile as sf
-    # Try different import paths for F5-TTS
+    import tempfile
+    import subprocess
+    import threading
+    import time
+    
+    # Try to import the inference function directly
+    F5TTS_INFER = None
+    F5TTS_CLASS = None
+    
+    try:
+        from f5_tts.infer.utils_infer import infer_process
+        F5TTS_INFER = infer_process
+    except ImportError:
+        pass
+    
+    # Try alternative API imports
     try:
         from f5_tts.api import F5TTS
+        F5TTS_CLASS = F5TTS
     except ImportError:
-        try:
-            from f5_tts.infer.utils_infer import infer_process
-            F5TTS = None  # Use function-based approach
-        except ImportError:
-            F5TTS = None
-    F5_TTS_AVAILABLE = True
+        pass
+    
+    # Check if CLI is available
+    F5TTS_CLI_AVAILABLE = False
+    try:
+        result = subprocess.run(['python', '-c', 'import f5_tts.infer.infer_cli'], 
+                              capture_output=True, text=True, timeout=5)
+        F5TTS_CLI_AVAILABLE = (result.returncode == 0)
+    except:
+        pass
+    
+    # Legacy variable for backward compatibility
+    F5TTS = F5TTS_CLASS
+    
+    F5_TTS_AVAILABLE = (F5TTS_INFER is not None or F5TTS_CLASS is not None or F5TTS_CLI_AVAILABLE)
+    
 except ImportError:
     F5_TTS_AVAILABLE = False
     F5TTS = None
-    # Don't show warning here as it's optional
+    F5TTS_INFER = None
+    F5TTS_CLASS = None
+    F5TTS_CLI_AVAILABLE = False
 
 # Audio recording imports
 try:
@@ -504,48 +532,36 @@ class F5TTSThai:
     def _initialize_model(self):
         """Initialize the F5-TTS model"""
         try:
-            # Try multiple initialization approaches
-            if F5TTS is not None:
-                # Try class-based approach
+            # Use the globally imported variables
+            
+            # Method 1: Try class-based approach (API)
+            if F5TTS_CLASS is not None:
                 try:
-                    self.model = F5TTS(model_type="F5-TTS")
+                    self.model = F5TTS_CLASS()
                     self.available = True
-                    st.success("✅ F5-TTS-THAI initialized via API")
+                    st.success("✅ F5-TTS-THAI initialized via API class")
                     return
                 except Exception as e:
                     st.warning(f"F5-TTS API initialization failed: {str(e)}")
             
-            # Try function-based approach
-            try:
-                from f5_tts.infer.utils_infer import infer_process
-                self.infer_function = infer_process
-                self.available = True
-                st.success("✅ F5-TTS-THAI initialized via inference function")
-                return
-            except ImportError:
-                pass
-            
-            # Try alternative import
-            try:
-                from f5_tts.model import F5TTS as F5TTSModel
-                self.model = F5TTSModel()
-                self.available = True
-                st.success("✅ F5-TTS-THAI initialized via model import")
-                return
-            except ImportError:
-                pass
+            # Method 2: Try function-based approach
+            if F5TTS_INFER is not None:
+                try:
+                    self.infer_function = F5TTS_INFER
+                    self.available = True
+                    st.success("✅ F5-TTS-THAI initialized via inference function")
+                    return
+                except Exception as e:
+                    st.warning(f"F5-TTS inference function failed: {str(e)}")
                 
-            # Check if command line tool is available
-            try:
-                import subprocess
-                result = subprocess.run(['python', '-c', 'import f5_tts'], 
-                                      capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
+            # Method 3: Check if command line tool is available
+            if F5TTS_CLI_AVAILABLE:
+                try:
                     self.available = True
                     st.info("✅ F5-TTS-THAI available via command line")
                     return
-            except:
-                pass
+                except Exception as e:
+                    st.warning(f"F5-TTS CLI check failed: {str(e)}")
             
             # If we get here, F5-TTS is not available
             self.available = False
@@ -602,15 +618,33 @@ class F5TTSThai:
             if self.model is not None:
                 try:
                     # Use F5TTS API with correct parameters
-                    # Try different parameter combinations
+                    # F5TTS.infer() requires ref_file parameter
                     audio_data = None
                     
-                    # Try gen_text parameter
+                    # Create a temporary reference file if ref_audio is not provided
+                    temp_ref_file = None
+                    if ref_audio is None:
+                        # Create a simple reference audio file (silence or text-to-speech of ref_text)
+                        try:
+                            # Try to create a temporary reference using gTTS
+                            if GTTS_AVAILABLE:
+                                temp_ref_obj = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+                                temp_ref_file = temp_ref_obj.name
+                                temp_ref_obj.close()
+                                
+                                ref_tts = gTTS(text=ref_text or "สวัสดี", lang="th")
+                                ref_tts.save(temp_ref_file)
+                                ref_audio = temp_ref_file
+                        except Exception:
+                            # If that fails, we'll have to skip this method
+                            raise Exception("ref_file is required but not provided and cannot create temporary reference")
+                    
+                    # Try gen_text parameter first
                     try:
                         audio_data = self.model.infer(
                             gen_text=text,  # Primary parameter name
                             ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
-                            ref_audio=ref_audio,
+                            ref_file=ref_audio,  # Required parameter
                             remove_silence=True
                         )
                     except TypeError as e:
@@ -621,13 +655,20 @@ class F5TTSThai:
                                 audio_data = self.model.infer(
                                     text=text,
                                     ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
-                                    ref_audio=ref_audio,
+                                    ref_file=ref_audio,
                                     remove_silence=True
                                 )
                             else:
                                 raise e
                         else:
                             raise e
+                    
+                    # Clean up temporary reference file
+                    if temp_ref_file and os.path.exists(temp_ref_file):
+                        try:
+                            os.unlink(temp_ref_file)
+                        except:
+                            pass
                     
                     # Save audio
                     if hasattr(audio_data, 'cpu'):
@@ -639,36 +680,62 @@ class F5TTSThai:
                     st.success("✅ F5-TTS-THAI: Audio generated successfully!")
                     
                 except Exception as e:
+                    # Clean up temporary reference file on error
+                    if 'temp_ref_file' in locals() and temp_ref_file and os.path.exists(temp_ref_file):
+                        try:
+                            os.unlink(temp_ref_file)
+                        except:
+                            pass
                     st.warning(f"⚠️ API audio generation failed: {str(e)}")
             
             # Method 2: Try function-based approach
             if not success and self.infer_function is not None:
                 try:
                     # Use infer_process function with correct parameters
-                    # Try different parameter combinations
+                    # The function doesn't accept output_path, it returns audio data
                     try:
+                        # Basic parameters for infer_process
                         result = self.infer_function(
-                            gen_text=text,  # Primary parameter name
+                            gen_text=text,
                             ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
-                            ref_audio=ref_audio,
-                            output_path=output_file,
-                            model_name="F5-TTS"  # Use standard F5-TTS model
+                            ref_file=ref_audio  # Use ref_file instead of ref_audio
                         )
                     except TypeError as e:
-                        if "unexpected keyword argument" in str(e) and "gen_text" in str(e):
-                            # Try with 'text' parameter
-                            result = self.infer_function(
-                                text=text,
-                                ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
-                                ref_audio=ref_audio,
-                                output_path=output_file,
-                                model_name="F5-TTS"
-                            )
+                        if "unexpected keyword argument" in str(e):
+                            # Try alternative parameter names
+                            if "gen_text" in str(e):
+                                # Try with 'text' parameter
+                                result = self.infer_function(
+                                    text=text,
+                                    ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย",
+                                    ref_file=ref_audio
+                                )
+                            elif "output_path" in str(e):
+                                # Remove output_path parameter
+                                result = self.infer_function(
+                                    gen_text=text,
+                                    ref_text=ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย"
+                                )
+                            else:
+                                raise e
                         else:
                             raise e
                     
-                    success = True
-                    st.success("✅ F5-TTS-THAI: Audio generated via inference function!")
+                    # If we get audio data back, save it
+                    if result is not None:
+                        if hasattr(result, 'cpu'):
+                            result = result.cpu().numpy()
+                        
+                        # Save the audio result
+                        if isinstance(result, (list, tuple)) and len(result) > 0:
+                            audio_data = result[0] if isinstance(result[0], np.ndarray) else result
+                        else:
+                            audio_data = result
+                        
+                        # Write to file
+                        sf.write(output_file, audio_data, 22050)
+                        success = True
+                        st.success("✅ F5-TTS-THAI: Audio generated via inference function!")
                     
                 except Exception as e:
                     st.warning(f"⚠️ Function audio generation failed: {str(e)}")
