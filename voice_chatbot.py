@@ -507,15 +507,20 @@ class F5TTSThai:
             # Try multiple initialization approaches
             if F5TTS is not None:
                 # Try class-based approach
-                self.model = F5TTS(model_type="F5-TTS")
-                self.available = True
-                return
+                try:
+                    self.model = F5TTS(model_type="F5-TTS")
+                    self.available = True
+                    st.success("✅ F5-TTS-THAI initialized via API")
+                    return
+                except Exception as e:
+                    st.warning(f"F5-TTS API initialization failed: {str(e)}")
             
             # Try function-based approach
             try:
                 from f5_tts.infer.utils_infer import infer_process
                 self.infer_function = infer_process
                 self.available = True
+                st.success("✅ F5-TTS-THAI initialized via inference function")
                 return
             except ImportError:
                 pass
@@ -525,6 +530,7 @@ class F5TTSThai:
                 from f5_tts.model import F5TTS as F5TTSModel
                 self.model = F5TTSModel()
                 self.available = True
+                st.success("✅ F5-TTS-THAI initialized via model import")
                 return
             except ImportError:
                 pass
@@ -535,14 +541,19 @@ class F5TTSThai:
                 result = subprocess.run(['python', '-c', 'import f5_tts'], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
-                    st.info("F5-TTS installed but API not accessible. TTS available via command line.")
-                    self.available = False
+                    self.available = True
+                    st.info("✅ F5-TTS-THAI available via command line")
+                    return
             except:
                 pass
+            
+            # If we get here, F5-TTS is not available
+            self.available = False
                 
         except Exception as e:
             # Don't show error in UI, just mark as unavailable
             self.available = False
+            st.warning(f"F5-TTS-THAI initialization failed: {str(e)}")
     
     def is_available(self) -> bool:
         """Check if F5-TTS-THAI is available"""
@@ -554,13 +565,130 @@ class F5TTSThai:
             return False
         
         try:
-            # For now, show a message that F5-TTS would be used
-            # This prevents the error while maintaining the interface
-            st.info("🔊 F5-TTS-THAI: Text-to-speech generation started...")
-            st.warning("F5-TTS-THAI audio generation not yet fully implemented. Using fallback TTS.")
-            return False  # Fall back to pyttsx3
+            st.info("🔊 F5-TTS-THAI: Generating high-quality Thai speech...")
+            
+            # Prepare default reference if not provided
+            if ref_audio is None or ref_text is None:
+                # Use a default Thai reference (you can customize this)
+                ref_text = ref_text or "สวัสดีครับ ผมเป็นผู้ช่วยเสียงภาษาไทย"
+                # For now, we'll use the input text as reference if no audio is provided
+                if ref_audio is None:
+                    ref_audio = None  # F5-TTS can work without reference audio
+            
+            # Determine output file
+            if save_file is None:
+                output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav').name
+            else:
+                output_file = save_file
+            
+            # Try different F5-TTS approaches
+            success = False
+            
+            # Method 1: Try API-based approach
+            if self.model is not None:
+                try:
+                    # Use F5TTS API if available
+                    audio_data = self.model.infer(
+                        text=text,
+                        ref_text=ref_text,
+                        ref_audio=ref_audio,
+                        remove_silence=True
+                    )
+                    
+                    # Save audio
+                    if hasattr(audio_data, 'cpu'):
+                        audio_data = audio_data.cpu().numpy()
+                    
+                    # Write to file (assuming 22050 Hz sample rate)
+                    sf.write(output_file, audio_data, 22050)
+                    success = True
+                    st.success("✅ F5-TTS-THAI: Audio generated successfully!")
+                    
+                except Exception as e:
+                    st.warning(f"F5-TTS API method failed: {str(e)}")
+            
+            # Method 2: Try function-based approach
+            if not success and self.infer_function is not None:
+                try:
+                    # Use infer_process function
+                    result = self.infer_function(
+                        text=text,
+                        ref_text=ref_text,
+                        ref_audio=ref_audio,
+                        output_path=output_file,
+                        model_name="F5-TTS-Thai"
+                    )
+                    success = True
+                    st.success("✅ F5-TTS-THAI: Audio generated via inference function!")
+                    
+                except Exception as e:
+                    st.warning(f"F5-TTS inference method failed: {str(e)}")
+            
+            # Method 3: Try command-line approach
+            if not success:
+                try:
+                    import subprocess
+                    import tempfile
+                    
+                    # Create temporary text file
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+                        f.write(text)
+                        text_file = f.name
+                    
+                    # Prepare command
+                    cmd = [
+                        'python', '-m', 'f5_tts.infer.infer_cli',
+                        '--text', text,
+                        '--output', output_file,
+                        '--model', 'F5-TTS'
+                    ]
+                    
+                    if ref_text:
+                        cmd.extend(['--ref_text', ref_text])
+                    if ref_audio:
+                        cmd.extend(['--ref_audio', ref_audio])
+                    
+                    # Run F5-TTS command
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    
+                    # Clean up text file
+                    os.unlink(text_file)
+                    
+                    if result.returncode == 0 and os.path.exists(output_file):
+                        success = True
+                        st.success("✅ F5-TTS-THAI: Audio generated via CLI!")
+                    else:
+                        st.warning(f"F5-TTS CLI failed: {result.stderr}")
+                        
+                except Exception as e:
+                    st.warning(f"F5-TTS CLI method failed: {str(e)}")
+            
+            # If successful, play the audio
+            if success and os.path.exists(output_file):
+                if save_file is None:
+                    # Play using streamlit audio player
+                    with open(output_file, 'rb') as audio_file:
+                        st.audio(audio_file.read(), format='audio/wav')
+                    
+                    # Schedule cleanup
+                    def cleanup_file():
+                        time.sleep(10)  # Wait longer for F5-TTS audio
+                        try:
+                            if os.path.exists(output_file):
+                                os.unlink(output_file)
+                        except:
+                            pass
+                    
+                    cleanup_thread = threading.Thread(target=cleanup_file, daemon=True)
+                    cleanup_thread.start()
+                
+                return True
+            else:
+                st.warning("F5-TTS-THAI: All methods failed, falling back to other TTS engines")
+                return False
             
         except Exception as e:
+            st.error(f"F5-TTS-THAI generation failed: {str(e)}")
             return False
 
 
@@ -1044,6 +1172,22 @@ def main():
                     index=engine_options.index(st.session_state.tts_engine) if st.session_state.tts_engine in engine_options else 0
                 )
                 st.session_state.tts_engine = selected_engine
+                
+                # F5-TTS Debug Info
+                if st.session_state.tts.f5_tts_engine:
+                    with st.expander("🔧 F5-TTS-THAI Debug Info"):
+                        st.write(f"**Available:** {'✅' if st.session_state.tts.f5_tts_engine.is_available() else '❌'}")
+                        st.write(f"**F5_TTS_AVAILABLE:** {'✅' if F5_TTS_AVAILABLE else '❌'}")
+                        st.write(f"**Model initialized:** {'✅' if st.session_state.tts.f5_tts_engine.model else '❌'}")
+                        st.write(f"**Infer function:** {'✅' if st.session_state.tts.f5_tts_engine.infer_function else '❌'}")
+                        
+                        if st.button("🧪 Test F5-TTS-THAI"):
+                            test_text = "สวัสดีครับ นี่คือการทดสอบเสียง F5-TTS-THAI"
+                            success = st.session_state.tts.f5_tts_engine.speak(test_text)
+                            if success:
+                                st.success("✅ F5-TTS-THAI test successful!")
+                            else:
+                                st.error("❌ F5-TTS-THAI test failed")
                 
                 # Show F5-TTS installation guide if not available
                 if "F5-TTS-THAI" not in available_engines:
