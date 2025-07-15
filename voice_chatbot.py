@@ -884,7 +884,7 @@ def main():
         layout="wide"
     )
     
-    st.title("🎤 Voice Chatbot with ASR & LLM")
+    st.title("🎤 MANJU Voice Chatbot: Multi-agent AI for Natural Just-in-Time Understanding")
     st.markdown("*Speak, transcribe, chat, and listen to responses!*")
     
     # Initialize session state
