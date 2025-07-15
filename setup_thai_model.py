@@ -57,8 +57,8 @@ def setup_thai_model():
         {
             "filename": "vocab.txt",
             "url": f"{base_url}/vocab.txt",
-            "description": "Thai Vocabulary File",
-            "required": False
+            "description": "Thai Vocabulary File (REQUIRED - custom 2587 tokens)",
+            "required": True  # This is required for VIZINTZOR model
         },
         {
             "filename": "config.json",
@@ -134,6 +134,15 @@ def verify_installation():
         try:
             from f5_tts.infer.utils_infer import infer_process
             print("✅ F5-TTS inference function available")
+            
+            # Print function signature for debugging
+            try:
+                import inspect
+                sig = inspect.signature(infer_process)
+                print(f"📋 infer_process signature: {sig}")
+            except:
+                pass
+                
         except ImportError:
             print("❌ F5-TTS not found. Install with:")
             print("   pip install git+https://github.com/VYNCX/F5-TTS-THAI.git")

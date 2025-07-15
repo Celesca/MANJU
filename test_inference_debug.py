@@ -34,14 +34,59 @@ def test_model_inference():
         
         print("✅ F5-TTS imports successful")
         
-        # Load model
+        # Check for VIZINTZOR vocab file
+        vocab_paths = [
+            "vocab.txt", 
+            "models/vocab.txt", 
+            "F5-TTS-THAI/vocab.txt"
+        ]
+        
+        vocab_file = None
+        for vpath in vocab_paths:
+            if os.path.exists(vpath):
+                vocab_file = vpath
+                print(f"✅ Found vocab file: {vocab_file}")
+                break
+        
+        if not vocab_file:
+            print("📁 Downloading VIZINTZOR vocab file...")
+            try:
+                # Try to download the correct vocab file from VIZINTZOR
+                try:
+                    from huggingface_hub import hf_hub_download
+                    vocab_file = hf_hub_download(
+                        repo_id="VIZINTZOR/F5-TTS-THAI",
+                        filename="vocab.txt",
+                        local_dir="./models"
+                    )
+                except ImportError:
+                    try:
+                        from huggingface_hub import cached_path
+                        vocab_file = str(cached_path("hf://VIZINTZOR/F5-TTS-THAI/vocab.txt"))
+                    except ImportError:
+                        print("❌ HuggingFace Hub not available")
+                        vocab_file = None
+                
+                if vocab_file:
+                    print(f"✅ Downloaded vocab: {vocab_file}")
+                else:
+                    print("❌ Could not download vocab file")
+                    
+            except Exception as e:
+                print(f"❌ Vocab download failed: {e}")
+                vocab_file = None
+        
+        # Load model with correct vocab
         F5TTS_model_cfg = dict(
             dim=1024, depth=22, heads=16, ff_mult=2, 
             text_dim=512, conv_layers=4
         )
         
-        print("🔄 Loading model...")
-        model = load_model(DiT, F5TTS_model_cfg, model_path, use_ema=True)
+        print("🔄 Loading model with VIZINTZOR vocabulary...")
+        print(f"📋 Model path: {model_path}")
+        print(f"📋 Vocab file: {vocab_file}")
+        
+        model = load_model(DiT, F5TTS_model_cfg, model_path, vocab_file=vocab_file, use_ema=True)
         print(f"✅ Model loaded: {type(model)}")
         
         # Check model attributes
@@ -80,7 +125,7 @@ def test_model_inference():
                 ref_audio=ref_audio_path,
                 ref_text=ref_text,
                 gen_text=test_text,
-                model=model,
+                model_obj=model,  # Fixed: parameter name is model_obj, not model
                 vocoder=vocoder,
                 nfe_step=16,  # Faster for testing
                 speed=1.0,

@@ -834,7 +834,7 @@ class F5TTSThai:
                         ref_audio=use_ref_audio,
                         ref_text=use_ref_text,
                         gen_text=text,
-                        model=self.model,
+                        model_obj=self.model,  # Fixed: parameter name is model_obj, not model
                         vocoder=getattr(self, 'vocoder', None),  # Use vocoder if available
                         cross_fade_duration=0.15,
                         nfe_step=32,
