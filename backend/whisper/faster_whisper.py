@@ -151,7 +151,7 @@ class FasterWhisperASR:
     def _load_model(self) -> None:
         """Load the faster-whisper model"""
         try:
-            from faster_whisper import WhisperModel
+            from backend.whisper.faster_whisper import WhisperModel
         except ImportError:
             raise ImportError(
                 "faster-whisper not found. Install with: pip install faster-whisper\n"

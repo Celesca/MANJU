@@ -36,7 +36,7 @@ def test_faster_whisper():
     print("\n🧪 Testing faster-whisper installation...")
     
     try:
-        from faster_whisper import WhisperModel
+        from backend.whisper.faster_whisper import WhisperModel
         print("✅ faster-whisper imported successfully")
         
         # Test model loading

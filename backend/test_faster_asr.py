@@ -5,7 +5,7 @@ Quick test of the optimized Whisper ASR with faster-whisper
 
 import os
 import time
-from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
+from backend.whisper.whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
 
 def test_optimized_asr():
     """Test the optimized ASR pipeline"""
