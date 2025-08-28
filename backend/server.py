@@ -25,7 +25,14 @@ from pydantic import BaseModel
 import uvicorn
 
 # Import our faster-whisper Thai ASR
-from whisper.faster_whisper_thai import FasterWhisperThai, WhisperConfig, create_thai_asr
+try:
+    from whisper.faster_whisper_thai import FasterWhisperThai, WhisperConfig, create_thai_asr
+except ImportError:
+    # Fallback if module structure is different
+    import sys
+    import os
+    sys.path.append(os.path.join(os.path.dirname(__file__), 'whisper'))
+    from faster_whisper_thai import FasterWhisperThai, WhisperConfig, create_thai_asr
 
 # Configure logging
 logging.basicConfig(
@@ -98,9 +105,9 @@ def initialize_asr_model():
     try:
         logger.info("🚀 Initializing Thai ASR model...")
         
-        # Create configuration for optimal performance
+        # Create configuration for optimal performance with Thai model
         config = WhisperConfig(
-            model_name="large-v3",  # Best for Thai
+            model_name="Vinxscribe/biodatlab-whisper-th-large-v3-faster",  # Optimized Thai model
             language="th",
             task="transcribe",
             device="auto",  # Auto-detect CUDA/CPU

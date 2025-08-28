@@ -21,8 +21,8 @@ os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 class WhisperConfig:
     """Configuration for faster-whisper Thai ASR"""
     
-    # Model configuration
-    model_name: str = "large-v3"  # Best model for Thai language
+    # Model configuration - Using the specific Thai model from Hugging Face
+    model_name: str = "Vinxscribe/biodatlab-whisper-th-large-v3-faster"  # Optimized Thai model
     language: str = "th"
     task: str = "transcribe"
     
@@ -92,11 +92,13 @@ class FasterWhisperThai:
                 "faster-whisper not installed. Install with: pip install faster-whisper"
             )
         
-        print(f"📦 Loading faster-whisper model: {self.config.model_name}")
+        print(f"📦 Loading faster-whisper Thai model: {self.config.model_name}")
         print(f"   Device: {self.device}")
         print(f"   Compute type: {self.config.compute_type}")
         
         try:
+            # For Hugging Face models, we can pass the model name directly
+            # faster-whisper will automatically download from Hugging Face
             self.model = WhisperModel(
                 self.config.model_name,
                 device=self.device,
@@ -104,14 +106,33 @@ class FasterWhisperThai:
                 cpu_threads=4 if self.device == "cpu" else 0,
                 num_workers=1,
                 download_root=None,  # Use default cache
-                local_files_only=False
+                local_files_only=False  # Allow downloading from Hugging Face
             )
-            print("✅ faster-whisper model loaded successfully!")
-            print("💡 Expected 2-4x speed improvement over standard Whisper")
+            print("✅ Thai faster-whisper model loaded successfully!")
+            print(f"💡 Using optimized Thai model: {self.config.model_name}")
+            print("🚀 Expected better performance for Thai language")
             
         except Exception as e:
             print(f"❌ Error loading model: {e}")
-            raise
+            print("🔄 Trying fallback to standard large-v3 model...")
+            
+            # Fallback to standard model if the specific Thai model fails
+            try:
+                self.model = WhisperModel(
+                    "large-v3",
+                    device=self.device,
+                    compute_type=self.config.compute_type,
+                    cpu_threads=4 if self.device == "cpu" else 0,
+                    num_workers=1,
+                    download_root=None,
+                    local_files_only=False
+                )
+                print("✅ Fallback model loaded successfully!")
+                print("⚠️ Using standard large-v3 instead of Thai-optimized model")
+                
+            except Exception as fallback_error:
+                print(f"❌ Fallback also failed: {fallback_error}")
+                raise
     
     def _preprocess_audio(self, audio_path: str) -> str:
         """
