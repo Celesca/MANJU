@@ -26,14 +26,14 @@ import uvicorn
 
 # Import our model manager and ASR components
 try:
-    from model_manager import get_model_manager, ModelManager
+    from backend.whisper.model_manager import get_model_manager, ModelManager
     from whisper.faster_whisper_thai import FasterWhisperThai, WhisperConfig
 except ImportError:
     # Fallback if module structure is different
     import sys
     import os
     sys.path.append(os.path.join(os.path.dirname(__file__), 'whisper'))
-    from model_manager import get_model_manager, ModelManager
+    from backend.whisper.model_manager import get_model_manager, ModelManager
     from faster_whisper_thai import FasterWhisperThai, WhisperConfig
 
 # Configure logging
