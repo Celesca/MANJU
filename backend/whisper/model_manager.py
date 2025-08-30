@@ -74,10 +74,21 @@ class ModelManager:
                 name="medium-faster",
                 display_name="Whisper Medium (Faster)",
                 model_type=ModelType.FASTER_WHISPER,
-                model_path="medium",
+                model_path="openai/whisper-medium",
                 language="th",
                 description="Medium model with faster-whisper, good balance of speed and accuracy",
                 performance_tier="fast"
+            ),
+
+            "biodatlab-small-combined": ModelInfo(
+                name="biodatlab-small-combined",
+                display_name="Biodatlab Whisper Thai Small Combined",
+                model_type=ModelType.FASTER_WHISPER,
+                model_path="biodatlab/whisper-th-small-combined",
+                language="th",
+                description="Small combined Thai model from Biodatlab, optimized for speed and resource usage.",
+                performance_tier="fast",
+                recommended=False
             ),
             
             # Standard Whisper models (higher accuracy)
