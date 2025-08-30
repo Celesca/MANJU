@@ -137,11 +137,13 @@ class FasterWhisperThai:
                 raise
     
     def _load_model_with_safetensors_support(self):
-        """Load model with safetensors support"""
+        """Load model with native safetensors support - no conversion needed"""
         from faster_whisper import WhisperModel
+        import os
         
         try:
-            # First try standard loading
+            # Try loading with native safetensors support
+            # Modern faster-whisper versions can read safetensors directly
             return WhisperModel(
                 self.config.model_name,
                 device=self.device,
@@ -152,48 +154,32 @@ class FasterWhisperThai:
                 local_files_only=False
             )
         except Exception as e:
-            if "model.bin" in str(e):
-                # Try with local_files_only=True to force using cached files
-                print("🔄 Trying with cached files...")
-                return self._convert_safetensors_to_compatible_format()
-            raise e
-    
-    def _convert_safetensors_to_compatible_format(self):
-        """Convert safetensors to compatible format for faster-whisper"""
-        import os
-        from pathlib import Path
-        import shutil
-        
-        try:
-            # Get the cache directory for the model
+            print(f"❌ Direct loading failed: {e}")
+            
+            # If direct loading fails, try loading from local cache with safetensors
             cache_dir = self._get_model_cache_directory()
-            if not cache_dir or not os.path.exists(cache_dir):
-                raise Exception("Model cache directory not found")
+            if cache_dir and os.path.exists(cache_dir):
+                print(f"🔄 Trying to load from local cache with safetensors: {cache_dir}")
+                
+                # Check what files exist
+                model_safetensors = os.path.join(cache_dir, "model.safetensors")
+                model_bin = os.path.join(cache_dir, "model.bin")
+                
+                print(f"📁 Files in cache:")
+                print(f"   model.safetensors: {os.path.exists(model_safetensors)}")
+                print(f"   model.bin: {os.path.exists(model_bin)}")
+                
+                # Try loading from cache directory directly
+                return WhisperModel(
+                    cache_dir,
+                    device=self.device,
+                    compute_type=self.config.compute_type,
+                    cpu_threads=4 if self.device == "cpu" else 0,
+                    num_workers=1,
+                    local_files_only=True
+                )
             
-            print(f"📁 Model cache found at: {cache_dir}")
-            
-            # Check if safetensors file exists
-            safetensors_file = os.path.join(cache_dir, "model.safetensors")
-            model_bin_file = os.path.join(cache_dir, "model.bin")
-            
-            if os.path.exists(safetensors_file) and not os.path.exists(model_bin_file):
-                print("🔄 Converting safetensors to compatible format...")
-                self._convert_safetensors_to_bin(safetensors_file, model_bin_file)
-            
-            # Try loading again
-            from faster_whisper import WhisperModel
-            return WhisperModel(
-                cache_dir,  # Use local path instead of HF repo
-                device=self.device,
-                compute_type=self.config.compute_type,
-                cpu_threads=4 if self.device == "cpu" else 0,
-                num_workers=1,
-                local_files_only=True
-            )
-            
-        except Exception as e:
-            print(f"❌ Safetensors conversion failed: {e}")
-            raise
+            raise e
     
     def _get_model_cache_directory(self):
         """Get the Hugging Face cache directory for the model"""
@@ -223,34 +209,6 @@ class FasterWhisperThai:
                             return os.path.join(snapshots_dir, latest_snapshot)
         
         return None
-    
-    def _convert_safetensors_to_bin(self, safetensors_path, bin_path):
-        """Convert safetensors file to model.bin format"""
-        try:
-            # Try to use safetensors library for conversion
-            try:
-                from safetensors import safe_open
-                import torch
-                
-                print("🔄 Converting safetensors to model.bin...")
-                
-                # Load from safetensors
-                state_dict = {}
-                with safe_open(safetensors_path, framework="pt", device="cpu") as f:
-                    for key in f.keys():
-                        state_dict[key] = f.get_tensor(key)
-                
-                # Save as model.bin
-                torch.save(state_dict, bin_path)
-                print("✅ Conversion completed successfully!")
-                
-            except ImportError:
-                print("⚠️ safetensors library not available, trying alternative...")
-                raise Exception("safetensors conversion requires 'safetensors' package")
-                
-        except Exception as e:
-            print(f"❌ Conversion failed: {e}")
-            raise
     
     def _load_model_alternative_approach(self):
         """Alternative approach for loading models with safetensors"""

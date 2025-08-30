@@ -1,6 +1,6 @@
 # ASR (Automatic Speech Recognition)
-faster-whisper>=0.10.0
-safetensors>=0.4.0
+faster-whisper>=1.0.0
+# Note: safetensors support is built into newer faster-whisper versions
 
 # Core dependencies
 streamlit>=1.28.0
