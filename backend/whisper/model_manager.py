@@ -83,7 +83,7 @@ class ModelManager:
             "biodatlab-small-combined": ModelInfo(
                 name="biodatlab-small-combined",
                 display_name="Biodatlab Whisper Thai Small Combined",
-                model_type=ModelType.FASTER_WHISPER,
+                model_type=ModelType.STANDARD_WHISPER,
                 model_path="biodatlab/whisper-th-small-combined",
                 language="th",
                 description="Small combined Thai model from Biodatlab, optimized for speed and resource usage. Supports safetensors format.",
@@ -206,9 +206,9 @@ class ModelManager:
     def _load_standard_whisper_model(self, model_info: ModelInfo, config_overrides: Optional[Dict] = None):
         """Load standard Whisper model"""
         try:
-            from whisper.whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
+            from whisper.whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig, SimplePipelineASR
         except ImportError:
-            from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
+            from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig, SimplePipelineASR
         
         # Create configurations
         audio_config = AudioConfig(
@@ -236,8 +236,9 @@ class ModelManager:
                     setattr(processing_config, key, value)
                 elif hasattr(audio_config, key):
                     setattr(audio_config, key, value)
-        
-        return OverlappingASRPipeline(audio_config, processing_config)
+
+        # Use the lightweight Transformers pipeline adapter by default
+        return SimplePipelineASR(audio_config, processing_config)
     
     def get_current_model_info(self) -> Optional[Dict[str, Any]]:
         """Get information about currently loaded model"""
