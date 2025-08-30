@@ -86,7 +86,7 @@ class ModelManager:
                 model_type=ModelType.FASTER_WHISPER,
                 model_path="biodatlab/whisper-th-small-combined",
                 language="th",
-                description="Small combined Thai model from Biodatlab, optimized for speed and resource usage.",
+                description="Small combined Thai model from Biodatlab, optimized for speed and resource usage. Supports safetensors format.",
                 performance_tier="fast",
                 recommended=False
             ),

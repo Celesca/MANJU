@@ -84,7 +84,7 @@ class FasterWhisperThai:
             print("⚠️ Adjusted compute_type to 'int8' for CPU compatibility")
     
     def _load_model(self):
-        """Load the faster-whisper model"""
+        """Load the faster-whisper model with safetensors support"""
         try:
             from faster_whisper import WhisperModel
         except ImportError:
@@ -97,23 +97,25 @@ class FasterWhisperThai:
         print(f"   Compute type: {self.config.compute_type}")
         
         try:
-            # For Hugging Face models, we can pass the model name directly
-            # faster-whisper will automatically download from Hugging Face
-            self.model = WhisperModel(
-                self.config.model_name,
-                device=self.device,
-                compute_type=self.config.compute_type,
-                cpu_threads=4 if self.device == "cpu" else 0,
-                num_workers=1,
-                download_root=None,  # Use default cache
-                local_files_only=False  # Allow downloading from Hugging Face
-            )
+            # Try to load model with safetensors support
+            self.model = self._load_model_with_safetensors_support()
             print("✅ Thai faster-whisper model loaded successfully!")
             print(f"💡 Using optimized Thai model: {self.config.model_name}")
             print("🚀 Expected better performance for Thai language")
             
         except Exception as e:
             print(f"❌ Error loading model: {e}")
+            
+            # Check if it's a safetensors compatibility issue
+            if "model.bin" in str(e) or "safetensors" in str(e).lower():
+                print("🔄 Detected safetensors compatibility issue, trying alternative approach...")
+                try:
+                    self.model = self._load_model_alternative_approach()
+                    print("✅ Model loaded with alternative approach!")
+                    return
+                except Exception as alt_error:
+                    print(f"❌ Alternative approach failed: {alt_error}")
+            
             print("🔄 Trying fallback to standard large-v3 model...")
             
             # Fallback to standard model if the specific Thai model fails
@@ -134,6 +136,152 @@ class FasterWhisperThai:
                 print(f"❌ Fallback also failed: {fallback_error}")
                 raise
     
+    def _load_model_with_safetensors_support(self):
+        """Load model with safetensors support"""
+        from faster_whisper import WhisperModel
+        
+        try:
+            # First try standard loading
+            return WhisperModel(
+                self.config.model_name,
+                device=self.device,
+                compute_type=self.config.compute_type,
+                cpu_threads=4 if self.device == "cpu" else 0,
+                num_workers=1,
+                download_root=None,
+                local_files_only=False
+            )
+        except Exception as e:
+            if "model.bin" in str(e):
+                # Try with local_files_only=True to force using cached files
+                print("🔄 Trying with cached files...")
+                return self._convert_safetensors_to_compatible_format()
+            raise e
+    
+    def _convert_safetensors_to_compatible_format(self):
+        """Convert safetensors to compatible format for faster-whisper"""
+        import os
+        from pathlib import Path
+        import shutil
+        
+        try:
+            # Get the cache directory for the model
+            cache_dir = self._get_model_cache_directory()
+            if not cache_dir or not os.path.exists(cache_dir):
+                raise Exception("Model cache directory not found")
+            
+            print(f"📁 Model cache found at: {cache_dir}")
+            
+            # Check if safetensors file exists
+            safetensors_file = os.path.join(cache_dir, "model.safetensors")
+            model_bin_file = os.path.join(cache_dir, "model.bin")
+            
+            if os.path.exists(safetensors_file) and not os.path.exists(model_bin_file):
+                print("🔄 Converting safetensors to compatible format...")
+                self._convert_safetensors_to_bin(safetensors_file, model_bin_file)
+            
+            # Try loading again
+            from faster_whisper import WhisperModel
+            return WhisperModel(
+                cache_dir,  # Use local path instead of HF repo
+                device=self.device,
+                compute_type=self.config.compute_type,
+                cpu_threads=4 if self.device == "cpu" else 0,
+                num_workers=1,
+                local_files_only=True
+            )
+            
+        except Exception as e:
+            print(f"❌ Safetensors conversion failed: {e}")
+            raise
+    
+    def _get_model_cache_directory(self):
+        """Get the Hugging Face cache directory for the model"""
+        import os
+        from pathlib import Path
+        
+        # Standard HuggingFace cache location
+        hf_cache = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        hub_cache = os.path.join(hf_cache, "hub")
+        
+        # Convert model name to cache directory format
+        model_name_safe = self.config.model_name.replace("/", "--")
+        model_dir_pattern = f"models--{model_name_safe}"
+        
+        # Find the model directory
+        if os.path.exists(hub_cache):
+            for item in os.listdir(hub_cache):
+                if item.startswith(model_dir_pattern):
+                    model_path = os.path.join(hub_cache, item)
+                    # Look for snapshots directory
+                    snapshots_dir = os.path.join(model_path, "snapshots")
+                    if os.path.exists(snapshots_dir):
+                        # Get the latest snapshot
+                        snapshots = os.listdir(snapshots_dir)
+                        if snapshots:
+                            latest_snapshot = sorted(snapshots)[-1]
+                            return os.path.join(snapshots_dir, latest_snapshot)
+        
+        return None
+    
+    def _convert_safetensors_to_bin(self, safetensors_path, bin_path):
+        """Convert safetensors file to model.bin format"""
+        try:
+            # Try to use safetensors library for conversion
+            try:
+                from safetensors import safe_open
+                import torch
+                
+                print("🔄 Converting safetensors to model.bin...")
+                
+                # Load from safetensors
+                state_dict = {}
+                with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+                    for key in f.keys():
+                        state_dict[key] = f.get_tensor(key)
+                
+                # Save as model.bin
+                torch.save(state_dict, bin_path)
+                print("✅ Conversion completed successfully!")
+                
+            except ImportError:
+                print("⚠️ safetensors library not available, trying alternative...")
+                raise Exception("safetensors conversion requires 'safetensors' package")
+                
+        except Exception as e:
+            print(f"❌ Conversion failed: {e}")
+            raise
+    
+    def _load_model_alternative_approach(self):
+        """Alternative approach for loading models with safetensors"""
+        from faster_whisper import WhisperModel
+        
+        # Try different model sizes/versions that might be more compatible
+        alternative_models = [
+            "openai/whisper-small",
+            "openai/whisper-medium", 
+            "openai/whisper-base"
+        ]
+        
+        for alt_model in alternative_models:
+            try:
+                print(f"🔄 Trying alternative model: {alt_model}")
+                model = WhisperModel(
+                    alt_model,
+                    device=self.device,
+                    compute_type=self.config.compute_type,
+                    cpu_threads=4 if self.device == "cpu" else 0,
+                    num_workers=1,
+                    local_files_only=False
+                )
+                print(f"✅ Successfully loaded alternative model: {alt_model}")
+                return model
+            except Exception as e:
+                print(f"❌ Alternative model {alt_model} failed: {e}")
+                continue
+        
+        raise Exception("All alternative models failed to load")
+
     def _preprocess_audio(self, audio_path: str) -> str:
         """
         Preprocess audio file to optimal format for faster-whisper
