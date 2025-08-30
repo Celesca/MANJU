@@ -1,23 +1,337 @@
-# 🎤 Voice Chatbot with ASR & LLM
+# Multi-agent Call Center Backend
 
-## Multi-agent AI for Natural Just-in-Time Understanding - Voice Chatbot
-
-A complete voice chatbot solution that combines:
-- **ASR (Automatic Speech Recognition)** using Whisper with overlapping chunks
-- **LLM (Large Language Model)** using OpenRouter API
-- **TTS (Text-to-Speech)** with F5-TTS-THAI and pyttsx3 support
-- **Streamlit** web interface
+High-performance Thai ASR (Automatic Speech Recognition) backend server for multi-agent call center system using faster-whisper.
 
 ## 🚀 Features
 
-- **Voice Recording**: Record your voice directly in the web interface
-- **File Upload**: Upload audio files for transcription
-- **Real-time ASR**: Advanced overlapping chunk processing for better accuracy
-- **AI Chat**: Conversation with various models via OpenRouter API
-- **Advanced TTS**: High-quality Thai text-to-speech with F5-TTS-THAI
-- **Multiple TTS Engines**: F5-TTS-THAI for Thai, pyttsx3 for fallback
-- **Conversation History**: Track your entire conversation
-- **Multiple Input Methods**: Voice, file upload, or text input
+- **Optimized Thai ASR**: Uses faster-whisper for 2-4x speed improvement over standard Whisper
+- **RESTful API**: FastAPI-based server with comprehensive endpoints
+- **Batch Processing**: Support for multiple audio files in single request
+- **Voice Activity Detection**: Automatic speech detection for better performance
+- **Multiple Audio Formats**: Support for WAV, MP3, M4A, FLAC, OGG, WMA
+- **Auto Device Detection**: Automatically uses CUDA GPU when available
+- **Real-time Monitoring**: Health checks and performance metrics
+
+## 📋 Requirements
+
+- Python 3.8+
+- CUDA GPU (optional, but recommended for best performance)
+- FFmpeg (for audio processing)
+
+## 🛠️ Installation
+
+### 1. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Install faster-whisper
+
+```bash
+pip install faster-whisper
+```
+
+### 3. Install FFmpeg (if not already installed)
+
+**Windows:**
+- Download from: https://github.com/BtbN/FFmpeg-Builds/releases
+- Add to PATH or set FFMPEG_BINARY environment variable
+
+**Linux/Mac:**
+```bash
+# Ubuntu/Debian
+sudo apt update && sudo apt install ffmpeg
+
+# macOS with Homebrew
+brew install ffmpeg
+```
+
+## 🎬 Quick Start
+
+### Option 1: Using the Startup Script (Windows)
+
+```cmd
+# Navigate to backend directory
+cd backend
+
+# Run the startup script
+start_server.bat
+```
+
+### Option 2: Manual Start
+
+```bash
+# Navigate to backend directory
+cd backend
+
+# Start the server
+python server.py
+```
+
+The server will be available at:
+- **API**: http://localhost:8000
+- **Documentation**: http://localhost:8000/docs
+- **Health Check**: http://localhost:8000/health
+
+## 📡 API Endpoints
+
+### Health Check
+```http
+GET /health
+```
+
+### ASR Model Information
+```http
+GET /api/asr/info
+```
+
+### Single Audio Transcription
+```http
+POST /api/asr
+Content-Type: multipart/form-data
+
+Parameters:
+- file: Audio file (required)
+- language: Language code (default: "th")
+- use_vad: Use Voice Activity Detection (default: true)
+- beam_size: Beam size for decoding (default: 1)
+```
+
+### Batch Audio Transcription
+```http
+POST /api/asr/batch
+Content-Type: multipart/form-data
+
+Parameters:
+- files: List of audio files (max 10)
+- language: Language code (default: "th")
+- use_vad: Use Voice Activity Detection (default: true)
+- beam_size: Beam size for decoding (default: 1)
+```
+
+### Reload Model (Admin)
+```http
+POST /api/asr/reload
+```
+
+## 💻 Usage Examples
+
+### Using curl
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Transcribe audio file
+curl -X POST "http://localhost:8000/api/asr" \
+     -F "file=@your_audio.wav" \
+     -F "language=th"
+
+# Get model info
+curl http://localhost:8000/api/asr/info
+```
+
+### Using Python API Client
+
+```python
+from api_client import CallCenterAPIClient
+
+# Create client
+client = CallCenterAPIClient("http://localhost:8000")
+
+# Check health
+health = client.health_check()
+print(f"Server status: {health['status']}")
+
+# Transcribe audio
+result = client.transcribe_audio("audio.wav")
+print(f"Transcription: {result['text']}")
+```
+
+### Using Command Line Client
+
+```bash
+# Health check
+python api_client.py --health
+
+# Get model info
+python api_client.py --info
+
+# Transcribe single file
+python api_client.py --transcribe audio.wav
+
+# Batch transcription
+python api_client.py --batch audio1.wav audio2.wav audio3.wav
+
+# Custom settings
+python api_client.py --transcribe audio.wav --language th --beam-size 2 --no-vad
+```
+
+## 🧪 Testing
+
+### Run Test Suite
+
+```bash
+python test_server.py
+```
+
+This will test:
+- faster-whisper Thai ASR implementation
+- Server endpoints
+- API functionality
+
+### Manual Testing
+
+1. **Test the ASR module directly:**
+   ```python
+   from whisper.faster_whisper_thai import create_thai_asr
+   
+   asr = create_thai_asr()
+   result = asr.transcribe("test_audio.wav")
+   print(result['text'])
+   ```
+
+2. **Test server endpoints:**
+   - Visit http://localhost:8000/docs for interactive API documentation
+   - Use the provided API client examples
+
+## ⚙️ Configuration
+
+### faster-whisper Configuration
+
+Edit `whisper/faster_whisper_thai.py` or create custom config:
+
+```python
+from whisper.faster_whisper_thai import WhisperConfig, create_thai_asr
+
+config = WhisperConfig(
+    model_name="large-v3",        # Model size
+    language="th",                # Thai language
+    device="auto",                # "cuda", "cpu", or "auto"
+    compute_type="int8_float16",  # Precision
+    beam_size=1,                  # Decoding beam size
+    use_vad=True,                 # Voice Activity Detection
+    chunk_length_ms=30000,        # Chunk size (30 seconds)
+    overlap_ms=1000              # Overlap between chunks
+)
+
+asr = create_thai_asr(config)
+```
+
+### Server Configuration
+
+Environment variables:
+- `HOST`: Server host (default: "0.0.0.0")
+- `PORT`: Server port (default: "8000")
+- `DEBUG`: Enable debug mode (default: "false")
+
+## 🔧 Performance Tuning
+
+### For Best Performance:
+
+1. **Use CUDA GPU**: Ensure CUDA is available and faster-whisper uses GPU
+2. **Optimize compute type**: 
+   - `int8_float16`: Best balance of speed/quality (default)
+   - `int8`: Fastest, slightly lower quality
+   - `float16`: Higher quality, slower
+3. **Adjust beam size**: Lower values (1-2) for speed, higher (3-5) for accuracy
+4. **Enable VAD**: Voice Activity Detection improves performance on speech
+5. **Optimize chunk size**: 30 seconds is optimal for most use cases
+
+### Performance Monitoring:
+
+The API returns performance metrics:
+- `processing_time`: Time taken to process audio
+- `speed_ratio`: Processing speed vs real-time (higher is better)
+- `duration`: Original audio duration
+- `chunks_processed`: Number of chunks processed
+
+## 🐛 Troubleshooting
+
+### Common Issues:
+
+1. **FFmpeg not found**:
+   ```
+   Solution: Install FFmpeg and add to PATH
+   ```
+
+2. **faster-whisper import error**:
+   ```bash
+   pip install faster-whisper
+   ```
+
+3. **CUDA out of memory**:
+   ```python
+   # Use CPU or reduce compute precision
+   config.device = "cpu"
+   config.compute_type = "int8"
+   ```
+
+4. **Slow processing on CPU**:
+   ```python
+   # Optimize for CPU
+   config.compute_type = "int8"
+   config.beam_size = 1
+   config.chunk_length_ms = 15000  # Smaller chunks
+   ```
+
+5. **Server not starting**:
+   ```bash
+   # Check if port is in use
+   netstat -an | grep 8000
+   
+   # Use different port
+   PORT=8080 python server.py
+   ```
+
+## 📁 File Structure
+
+```
+backend/
+├── server.py                    # FastAPI server
+├── api_client.py               # API client example
+├── test_server.py              # Test suite
+├── start_server.bat            # Windows startup script
+├── requirements.txt            # Dependencies
+├── whisper/
+│   ├── faster_whisper_thai.py  # Optimized Thai ASR
+│   ├── faster_whisper.py       # Original implementation
+│   └── whisper.py              # Standard Whisper wrapper
+├── audio_uploads/              # Uploaded audio files
+├── temp/                       # Temporary files
+└── README.md                   # This file
+```
+
+## 🔮 Future Enhancements
+
+- [ ] WebSocket support for real-time streaming
+- [ ] Multi-language model switching
+- [ ] Audio preprocessing pipelines
+- [ ] Model quantization options
+- [ ] Distributed processing
+- [ ] Audio quality enhancement
+- [ ] Speaker diarization
+- [ ] Conversation summarization
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
+
+## 📞 Support
+
+For issues and questions:
+- Create an issue on GitHub
+- Check the troubleshooting section
+- Review the API documentation at `/docs`
 
 ## 📋 Prerequisites
 
