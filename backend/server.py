@@ -26,14 +26,14 @@ import uvicorn
 
 # Import our model manager and ASR components
 try:
-    from backend.whisper.model_manager import get_model_manager, ModelManager
+    from whisper.model_manager import get_model_manager, ModelManager
     from whisper.faster_whisper_thai import FasterWhisperThai, WhisperConfig
 except ImportError:
     # Fallback if module structure is different
     import sys
     import os
     sys.path.append(os.path.join(os.path.dirname(__file__), 'whisper'))
-    from backend.whisper.model_manager import get_model_manager, ModelManager
+    from whisper.model_manager import get_model_manager, ModelManager
     from faster_whisper_thai import FasterWhisperThai, WhisperConfig
 
 # Configure logging
@@ -141,7 +141,7 @@ def initialize_asr_model(model_id: str = "biodatlab-faster"):
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
-    logger.info("🎬 Starting Multi-agent Call Center Backend...")
+    logger.info("🎬 Starting Multi-agent Call Center ..")
     initialize_asr_model()
     
     # Create directories if they don't exist
