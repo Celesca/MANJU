@@ -1,7 +1,7 @@
 """
 Demo script to test the ASR pipeline
 """
-from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
+from backend.whisper.whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
 import time
 
 def test_asr():

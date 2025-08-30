@@ -36,3 +36,15 @@ pandas>=2.0.0
 tf-keras
 
 # PyTorch will be installed separately via setup script to avoid conflicts
+
+# FastAPI Backend Server dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+aiofiles>=23.2.1
+
+# faster-whisper for optimized Thai ASR
+faster-whisper>=0.10.0
+
+# Audio processing for server
+ffmpeg-python>=0.2.0

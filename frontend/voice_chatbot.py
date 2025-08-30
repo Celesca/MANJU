@@ -12,7 +12,7 @@ from openai import OpenAI
 
 
 # Import your ASR pipeline
-from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
+from backend.whisper.whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
 
 # RAG imports
 try:
