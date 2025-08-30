@@ -8,7 +8,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import tempfile
 import time
 import asyncio
@@ -24,15 +24,17 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
-# Import our faster-whisper Thai ASR
+# Import our model manager and ASR components
 try:
-    from whisper.faster_whisper_thai import FasterWhisperThai, WhisperConfig, create_thai_asr
+    from model_manager import get_model_manager, ModelManager
+    from whisper.faster_whisper_thai import FasterWhisperThai, WhisperConfig
 except ImportError:
     # Fallback if module structure is different
     import sys
     import os
     sys.path.append(os.path.join(os.path.dirname(__file__), 'whisper'))
-    from faster_whisper_thai import FasterWhisperThai, WhisperConfig, create_thai_asr
+    from model_manager import get_model_manager, ModelManager
+    from faster_whisper_thai import FasterWhisperThai, WhisperConfig
 
 # Configure logging
 logging.basicConfig(
@@ -59,9 +61,26 @@ class ASRResponse(BaseModel):
 class ASRRequest(BaseModel):
     """Request model for ASR configuration"""
     language: str = "th"
-    model_name: str = "large-v3"
+    model_id: str = "biodatlab-faster"  # Default to recommended model
     use_vad: bool = True
     beam_size: int = 1
+
+
+class ModelInfo(BaseModel):
+    """Model information response"""
+    id: str
+    name: str
+    type: str
+    language: str
+    description: str
+    performance_tier: str
+    recommended: bool
+
+
+class ModelListResponse(BaseModel):
+    """Response model for available models"""
+    models: List[ModelInfo]
+    current_model: Optional[Dict[str, Any]] = None
 
 
 class HealthResponse(BaseModel):
@@ -93,38 +112,29 @@ app.add_middleware(
 )
 
 # Global variables
-asr_model: Optional[FasterWhisperThai] = None
+model_manager: Optional[ModelManager] = None
 start_time = time.time()
 
 
 # Initialize ASR model
-def initialize_asr_model():
+def initialize_asr_model(model_id: str = "biodatlab-faster"):
     """Initialize the Thai ASR model"""
-    global asr_model
+    global model_manager
     
     try:
-        logger.info("🚀 Initializing Thai ASR model...")
+        logger.info("🚀 Initializing Model Manager...")
         
-        # Create configuration for optimal performance with Thai model
-        config = WhisperConfig(
-            model_name="Vinxscribe/biodatlab-whisper-th-large-v3-faster",  # Optimized Thai model
-            language="th",
-            task="transcribe",
-            device="auto",  # Auto-detect CUDA/CPU
-            compute_type="int8_float16",  # Balanced speed/quality
-            beam_size=1,  # Fast inference
-            use_vad=True,  # Voice activity detection
-            vad_threshold=0.35,
-            chunk_length_ms=30000,  # 30 seconds optimal
-            overlap_ms=1000
-        )
+        if model_manager is None:
+            model_manager = get_model_manager()
         
-        asr_model = create_thai_asr(config)
+        logger.info(f"📦 Loading model: {model_id}")
+        model_manager.load_model(model_id)
+        
         logger.info("✅ Thai ASR model initialized successfully!")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize ASR model: {e}")
-        asr_model = None
+        model_manager = None
 
 
 # Initialize model on startup
@@ -153,12 +163,14 @@ async def health_check():
     """Health check endpoint"""
     uptime = time.time() - start_time
     
+    current_model = model_manager.get_current_model_info() if model_manager else None
+    
     return HealthResponse(
-        status="healthy" if asr_model is not None else "degraded",
+        status="healthy" if model_manager and model_manager.current_model else "degraded",
         timestamp=datetime.now().isoformat(),
         uptime=uptime,
-        asr_model_loaded=asr_model is not None,
-        device=asr_model.device if asr_model else "unknown"
+        asr_model_loaded=model_manager is not None and model_manager.current_model is not None,
+        device=current_model.get("device", "unknown") if current_model else "unknown"
     )
 
 
@@ -167,26 +179,44 @@ async def health_check():
 async def transcribe_audio(
     file: UploadFile = File(..., description="Audio file to transcribe"),
     language: str = "th",
+    model_id: str = "biodatlab-faster",
     use_vad: bool = True,
     beam_size: int = 1
 ):
     """
-    Transcribe audio file to Thai text using faster-whisper
+    Transcribe audio file to Thai text using selected model
     
     Args:
         file: Audio file (WAV, MP3, M4A, etc.)
         language: Language code (default: 'th' for Thai)
+        model_id: Model ID to use for transcription
         use_vad: Use Voice Activity Detection (default: True)
         beam_size: Beam size for decoding (1-5, lower is faster)
         
     Returns:
         ASRResponse with transcription and metadata
     """
-    if asr_model is None:
-        raise HTTPException(
-            status_code=503,
-            detail="ASR model not available. Please check server health."
-        )
+    if model_manager is None or model_manager.current_model is None:
+        # Try to initialize with requested model
+        try:
+            initialize_asr_model(model_id)
+        except Exception:
+            raise HTTPException(
+                status_code=503,
+                detail="ASR model not available. Please check server health."
+            )
+    
+    # Check if we need to switch models
+    current_model_info = model_manager.get_current_model_info()
+    if current_model_info and current_model_info.get("id") != model_id:
+        logger.info(f"🔄 Switching model from {current_model_info.get('id')} to {model_id}")
+        try:
+            model_manager.load_model(model_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load model '{model_id}': {str(e)}"
+            )
     
     # Validate file
     if not file.filename:
@@ -216,19 +246,9 @@ async def transcribe_audio(
             tmp.write(audio_data)
             temp_file = tmp.name
         
-        # Update ASR configuration if needed
-        if (use_vad != asr_model.config.use_vad or 
-            beam_size != asr_model.config.beam_size or
-            language != asr_model.config.language):
-            
-            logger.info(f"🔧 Updating ASR config: lang={language}, vad={use_vad}, beam={beam_size}")
-            asr_model.config.language = language
-            asr_model.config.use_vad = use_vad
-            asr_model.config.beam_size = beam_size
-        
-        # Transcribe audio
+        # Transcribe audio using model manager
         logger.info("🎵 Starting transcription...")
-        result = asr_model.transcribe(temp_file)
+        result = model_manager.transcribe_with_current_model(temp_file)
         
         # Create response
         response = ASRResponse(
@@ -260,11 +280,50 @@ async def transcribe_audio(
                 pass
 
 
+# Model-related endpoints
+
+@app.get("/api/models", response_model=ModelListResponse)
+async def get_available_models():
+    """Get list of available ASR models"""
+    if model_manager is None:
+        model_manager_instance = get_model_manager()
+    else:
+        model_manager_instance = model_manager
+    
+    available_models = model_manager_instance.get_available_models()
+    current_model = model_manager_instance.get_current_model_info()
+    
+    return ModelListResponse(
+        models=[ModelInfo(**model) for model in available_models],
+        current_model=current_model
+    )
+
+
+@app.post("/api/models/{model_id}/load")
+async def load_model(model_id: str):
+    """Load a specific ASR model"""
+    if model_manager is None:
+        raise HTTPException(status_code=503, detail="Model manager not available")
+    
+    try:
+        model_manager.load_model(model_id)
+        return {
+            "status": "success", 
+            "message": f"Model '{model_id}' loaded successfully",
+            "model_info": model_manager.get_current_model_info()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
+
+
 # Batch transcription endpoint
 @app.post("/api/asr/batch")
 async def transcribe_batch(
     files: list[UploadFile] = File(..., description="Audio files to transcribe"),
     language: str = "th",
+    model_id: str = "biodatlab-faster",
     use_vad: bool = True,
     beam_size: int = 1
 ):
@@ -274,17 +333,32 @@ async def transcribe_batch(
     Args:
         files: List of audio files
         language: Language code (default: 'th')
+        model_id: Model ID to use for transcription
         use_vad: Use Voice Activity Detection
         beam_size: Beam size for decoding
         
     Returns:
         List of transcription results
     """
-    if asr_model is None:
-        raise HTTPException(
-            status_code=503,
-            detail="ASR model not available. Please check server health."
-        )
+    if model_manager is None or model_manager.current_model is None:
+        try:
+            initialize_asr_model(model_id)
+        except Exception:
+            raise HTTPException(
+                status_code=503,
+                detail="ASR model not available. Please check server health."
+            )
+    
+    # Check if we need to switch models
+    current_model_info = model_manager.get_current_model_info()
+    if current_model_info and current_model_info.get("id") != model_id:
+        try:
+            model_manager.load_model(model_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load model '{model_id}': {str(e)}"
+            )
     
     if len(files) > 10:
         raise HTTPException(status_code=400, detail="Maximum 10 files per batch")
@@ -294,7 +368,6 @@ async def transcribe_batch(
     for file in files:
         try:
             # Transcribe each file individually
-            # For now, we'll process sequentially. Could be optimized for parallel processing
             audio_data = await file.read()
             
             with tempfile.NamedTemporaryFile(suffix=Path(file.filename).suffix, delete=False) as tmp:
@@ -302,7 +375,7 @@ async def transcribe_batch(
                 temp_file = tmp.name
             
             try:
-                result = asr_model.transcribe(temp_file)
+                result = model_manager.transcribe_with_current_model(temp_file)
                 results.append({
                     "filename": file.filename,
                     "result": result,
@@ -326,31 +399,30 @@ async def transcribe_batch(
 @app.get("/api/asr/info")
 async def get_asr_info():
     """Get information about the loaded ASR model"""
-    if asr_model is None:
+    if model_manager is None or model_manager.current_model is None:
         raise HTTPException(status_code=503, detail="ASR model not available")
     
-    return {
-        "model_name": asr_model.config.model_name,
-        "language": asr_model.config.language,
-        "device": asr_model.device,
-        "compute_type": asr_model.config.compute_type,
-        "use_vad": asr_model.config.use_vad,
-        "beam_size": asr_model.config.beam_size,
-        "chunk_length_ms": asr_model.config.chunk_length_ms,
-        "overlap_ms": asr_model.config.overlap_ms
-    }
+    current_model_info = model_manager.get_current_model_info()
+    if not current_model_info:
+        raise HTTPException(status_code=503, detail="No model information available")
+    
+    return current_model_info
 
 
 # Reload model endpoint (for development/debugging)
 @app.post("/api/asr/reload")
-async def reload_asr_model():
+async def reload_asr_model(model_id: str = "biodatlab-faster"):
     """Reload the ASR model (admin endpoint)"""
     try:
-        logger.info("🔄 Reloading ASR model...")
-        initialize_asr_model()
+        logger.info(f"🔄 Reloading ASR model: {model_id}")
+        initialize_asr_model(model_id)
         
-        if asr_model is not None:
-            return {"status": "success", "message": "ASR model reloaded successfully"}
+        if model_manager is not None and model_manager.current_model is not None:
+            return {
+                "status": "success", 
+                "message": f"ASR model '{model_id}' reloaded successfully",
+                "model_info": model_manager.get_current_model_info()
+            }
         else:
             raise HTTPException(status_code=500, detail="Failed to reload ASR model")
     
@@ -368,7 +440,22 @@ async def root():
         "version": "1.0.0",
         "docs": "/docs",
         "health": "/health",
-        "asr_endpoint": "/api/asr"
+        "endpoints": {
+            "asr": "/api/asr",
+            "asr_batch": "/api/asr/batch",
+            "asr_info": "/api/asr/info",
+            "models": "/api/models",
+            "load_model": "/api/models/{model_id}/load",
+            "reload": "/api/asr/reload"
+        },
+        "supported_models": [
+            "biodatlab-faster (recommended)",
+            "pathumma-large (recommended)", 
+            "large-v3-faster",
+            "large-v3-standard",
+            "medium-faster",
+            "medium-standard"
+        ]
     }
 
 

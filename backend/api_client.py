@@ -36,13 +36,32 @@ class CallCenterAPIClient:
         except requests.RequestException as e:
             raise Exception(f"ASR info request failed: {e}")
     
-    def transcribe_audio(self, audio_file_path, language="th", use_vad=True, beam_size=1):
+    def get_available_models(self):
+        """Get list of available models"""
+        try:
+            response = self.session.get(f"{self.base_url}/api/models", timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            raise Exception(f"Failed to get models: {e}")
+    
+    def load_model(self, model_id):
+        """Load a specific model"""
+        try:
+            response = self.session.post(f"{self.base_url}/api/models/{model_id}/load", timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            raise Exception(f"Failed to load model: {e}")
+    
+    def transcribe_audio(self, audio_file_path, language="th", model_id="biodatlab-faster", use_vad=True, beam_size=1):
         """
         Transcribe an audio file
         
         Args:
             audio_file_path: Path to audio file
             language: Language code (default: 'th')
+            model_id: Model ID to use (default: 'biodatlab-faster')
             use_vad: Use Voice Activity Detection (default: True)
             beam_size: Beam size for decoding (default: 1)
             
@@ -61,11 +80,12 @@ class CallCenterAPIClient:
                 }
                 data = {
                     'language': language,
+                    'model_id': model_id,
                     'use_vad': use_vad,
                     'beam_size': beam_size
                 }
                 
-                print(f"🎵 Uploading {audio_path.name}...")
+                print(f"🎵 Uploading {audio_path.name} with model {model_id}...")
                 start_time = time.time()
                 
                 response = self.session.post(
@@ -85,13 +105,14 @@ class CallCenterAPIClient:
         except requests.RequestException as e:
             raise Exception(f"Transcription request failed: {e}")
     
-    def transcribe_batch(self, audio_files, language="th", use_vad=True, beam_size=1):
+    def transcribe_batch(self, audio_files, language="th", model_id="biodatlab-faster", use_vad=True, beam_size=1):
         """
         Transcribe multiple audio files in batch
         
         Args:
             audio_files: List of audio file paths
             language: Language code (default: 'th')
+            model_id: Model ID to use (default: 'biodatlab-faster')
             use_vad: Use Voice Activity Detection (default: True)
             beam_size: Beam size for decoding (default: 1)
             
@@ -114,11 +135,12 @@ class CallCenterAPIClient:
         try:
             data = {
                 'language': language,
+                'model_id': model_id,
                 'use_vad': use_vad,
                 'beam_size': beam_size
             }
             
-            print(f"🎵 Uploading {len(audio_files)} files for batch processing...")
+            print(f"🎵 Uploading {len(audio_files)} files for batch processing with model {model_id}...")
             start_time = time.time()
             
             response = self.session.post(
@@ -168,9 +190,12 @@ def main():
     parser.add_argument("--server", default="http://localhost:8000", help="Server URL")
     parser.add_argument("--health", action="store_true", help="Check server health")
     parser.add_argument("--info", action="store_true", help="Get ASR model info")
+    parser.add_argument("--models", action="store_true", help="List available models")
+    parser.add_argument("--load-model", metavar="MODEL_ID", help="Load specific model")
     parser.add_argument("--transcribe", metavar="AUDIO_FILE", help="Transcribe audio file")
     parser.add_argument("--batch", nargs="+", metavar="AUDIO_FILES", help="Batch transcribe audio files")
     parser.add_argument("--language", default="th", help="Language code (default: th)")
+    parser.add_argument("--model-id", default="biodatlab-faster", help="Model ID to use (default: biodatlab-faster)")
     parser.add_argument("--no-vad", action="store_true", help="Disable Voice Activity Detection")
     parser.add_argument("--beam-size", type=int, default=1, help="Beam size for decoding (default: 1)")
     
@@ -190,21 +215,53 @@ def main():
             print(f"   Uptime: {health.get('uptime', 0):.1f}s")
             return
         
+        # List available models
+        if args.models:
+            print("📋 Getting available models...")
+            models_info = client.get_available_models()
+            print("✅ Available Models:")
+            
+            current_model = models_info.get('current_model')
+            if current_model:
+                print(f"\n🔄 Currently loaded: {current_model.get('name')} (ID: {current_model.get('id')})")
+            
+            print("\n📚 All available models:")
+            for model in models_info.get('models', []):
+                status = "⭐ RECOMMENDED" if model.get('recommended') else ""
+                print(f"   {model.get('id')}: {model.get('name')} {status}")
+                print(f"      Type: {model.get('type')}, Tier: {model.get('performance_tier')}")
+                print(f"      Description: {model.get('description')}")
+                print()
+            return
+        
+        # Load specific model
+        if args.load_model:
+            print(f"🔄 Loading model: {args.load_model}")
+            result = client.load_model(args.load_model)
+            print(f"✅ {result.get('message')}")
+            if result.get('model_info'):
+                info = result['model_info']
+                print(f"   Name: {info.get('name')}")
+                print(f"   Type: {info.get('type')}")
+                print(f"   Language: {info.get('language')}")
+            return
+        
         # ASR info
         if args.info:
             print("📋 Getting ASR model information...")
             info = client.get_asr_info()
-            print("✅ ASR Model Info:")
+            print("✅ Current Model Info:")
             for key, value in info.items():
                 print(f"   {key}: {value}")
             return
         
         # Single file transcription
         if args.transcribe:
-            print(f"🎵 Transcribing: {args.transcribe}")
+            print(f"🎵 Transcribing: {args.transcribe} with model: {args.model_id}")
             result = client.transcribe_audio(
                 args.transcribe,
                 language=args.language,
+                model_id=args.model_id,
                 use_vad=not args.no_vad,
                 beam_size=args.beam_size
             )
@@ -213,10 +270,11 @@ def main():
         
         # Batch transcription
         if args.batch:
-            print(f"🎵 Batch transcribing {len(args.batch)} files...")
+            print(f"🎵 Batch transcribing {len(args.batch)} files with model: {args.model_id}...")
             result = client.transcribe_batch(
                 args.batch,
                 language=args.language,
+                model_id=args.model_id,
                 use_vad=not args.no_vad,
                 beam_size=args.beam_size
             )
@@ -237,6 +295,10 @@ def main():
         
         # No specific action, show help
         parser.print_help()
+        print("\n💡 Examples:")
+        print("   python api_client.py --models                    # List available models")
+        print("   python api_client.py --load-model pathumma-large # Load specific model")
+        print("   python api_client.py --transcribe audio.wav --model-id biodatlab-faster")
         
     except Exception as e:
         print(f"❌ Error: {e}")
