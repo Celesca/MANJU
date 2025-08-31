@@ -372,22 +372,39 @@ def initialize_onnx_model(model_id: str = "whisper-large-v3-onnx"):
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
+    global onnx_manager
+    
     logger.info("🎬 Starting ONNX Multi-agent Call Center Backend...")
+    
+    # Create directories first
+    os.makedirs("models/onnx", exist_ok=True)
+    os.makedirs("audio_uploads", exist_ok=True)
+    os.makedirs("temp", exist_ok=True)
     
     if not SHERPA_AVAILABLE:
         logger.error("❌ Sherpa-ONNX not available! Install with: pip install sherpa-onnx")
         logger.error("   Server will start but ONNX features will be disabled")
+        onnx_manager = None
     else:
         try:
-            initialize_onnx_model()
+            logger.info("🔧 Initializing ONNX manager and loading whisper-large-v3-onnx...")
+            initialize_onnx_model("whisper-large-v3-onnx")
+            
+            # Verify the manager and model are properly loaded
+            if onnx_manager is None or onnx_manager.recognizer is None:
+                logger.error("❌ ONNX manager or recognizer is None after initialization")
+                raise RuntimeError("ONNX initialization verification failed")
+            
+            current_model = onnx_manager.get_current_model_info()
+            if current_model:
+                logger.info(f"✅ Successfully loaded default model: {current_model['name']}")
+            else:
+                logger.warning("⚠️ ONNX manager initialized but no model info available")
+                
         except Exception as e:
             logger.error(f"❌ Failed to initialize ONNX model on startup: {e}")
-            logger.error("   Server will start but model loading may be required on first request")
-    
-    # Create directories
-    os.makedirs("models/onnx", exist_ok=True)
-    os.makedirs("audio_uploads", exist_ok=True)
-    os.makedirs("temp", exist_ok=True)
+            logger.error("   Server will start but ONNX features will be unavailable")
+            onnx_manager = None
     
     logger.info("🎉 ONNX Backend server started successfully!")
 
@@ -402,22 +419,31 @@ async def shutdown_event():
 @app.get("/onnx/health", response_model=ONNXHealthResponse)
 async def health_check():
     """Health check endpoint for ONNX server"""
+    global onnx_manager
+    
     uptime = time.time() - start_time
     
     current_model = None
+    model_loaded = False
+    
     if onnx_manager is not None:
         try:
             current_model = onnx_manager.get_current_model_info()
-        except Exception:
+            model_loaded = onnx_manager.recognizer is not None
+        except Exception as e:
+            logger.warning(f"⚠️ Error checking model status in health check: {e}")
             current_model = None
+            model_loaded = False
     
     sherpa_version = getattr(sherpa_onnx, '__version__', None) if SHERPA_AVAILABLE else None
     
+    status = "healthy" if (onnx_manager and model_loaded) else "degraded"
+    
     return ONNXHealthResponse(
-        status="healthy" if onnx_manager and onnx_manager.recognizer else "degraded",
+        status=status,
         timestamp=datetime.now().isoformat(),
         uptime=uptime,
-        onnx_model_loaded=onnx_manager is not None and onnx_manager.recognizer is not None,
+        onnx_model_loaded=model_loaded,
         sherpa_version=sherpa_version,
         device="cpu"  # TODO: detect CUDA
     )
@@ -449,22 +475,38 @@ async def transcribe_audio_onnx(
     
     logger.info(f"/api/onnx/asr called with model_id='{model_id}', language='{language}', file='{file.filename}'")
     
-    if onnx_manager is None or onnx_manager.recognizer is None:
+    # Ensure global onnx_manager is available and properly initialized
+    global onnx_manager
+    
+    if onnx_manager is None:
+        logger.warning("⚠️ ONNX manager is None, attempting to initialize...")
         try:
             initialize_onnx_model(model_id)
         except Exception as e:
             logger.error(f"❌ Failed to initialize ONNX model: {e}")
             raise HTTPException(
                 status_code=503,
-                detail="ONNX ASR model not available. Please check server health."
+                detail=f"ONNX ASR model not available: {str(e)}"
             )
     
-    # Verify onnx_manager is still valid after initialization
+    # Double-check after potential initialization
     if onnx_manager is None:
         raise HTTPException(
             status_code=503,
             detail="ONNX model manager failed to initialize"
         )
+    
+    # Check recognizer is available
+    if onnx_manager.recognizer is None:
+        logger.warning("⚠️ ONNX recognizer is None, attempting to load model...")
+        try:
+            onnx_manager.load_model(model_id)
+        except Exception as e:
+            logger.error(f"❌ Failed to load ONNX model: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to load ONNX model '{model_id}': {str(e)}"
+            )
     
     # Check if we need to switch models
     current_model_info = None
@@ -570,7 +612,10 @@ async def transcribe_audio_onnx(
 async def get_available_onnx_models():
     """Get list of available ONNX models"""
     try:
+        global onnx_manager
+        
         if onnx_manager is None:
+            logger.info("🔧 Creating temporary ONNX manager for model listing...")
             onnx_manager_instance = SherpaONNXManager()
         else:
             onnx_manager_instance = onnx_manager
@@ -579,8 +624,10 @@ async def get_available_onnx_models():
         
         current_model = None
         try:
-            current_model = onnx_manager_instance.get_current_model_info()
-        except Exception:
+            if onnx_manager_instance.recognizer is not None:
+                current_model = onnx_manager_instance.get_current_model_info()
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get current model info: {e}")
             current_model = None
         
         return ONNXModelListResponse(
@@ -601,8 +648,21 @@ async def load_onnx_model(model_id: str):
             detail="Sherpa-ONNX not available"
         )
     
+    global onnx_manager
+    
     if onnx_manager is None:
-        raise HTTPException(status_code=503, detail="ONNX model manager not available")
+        logger.info("🔧 ONNX manager not available, initializing...")
+        try:
+            initialize_onnx_model(model_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=503, 
+                detail=f"Failed to initialize ONNX model manager: {str(e)}"
+            )
+    
+    # Ensure we have a valid manager after initialization
+    if onnx_manager is None:
+        raise HTTPException(status_code=503, detail="ONNX model manager initialization failed")
     
     try:
         logger.info(f"/api/onnx/models/{model_id}/load called")
@@ -612,7 +672,8 @@ async def load_onnx_model(model_id: str):
         model_info = None
         try:
             model_info = onnx_manager.get_current_model_info()
-        except Exception:
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get model info after loading: {e}")
             model_info = {"id": model_id, "status": "loaded"}
         
         return {
@@ -630,6 +691,8 @@ async def load_onnx_model(model_id: str):
 @app.get("/api/onnx/info")
 async def get_onnx_asr_info():
     """Get information about the loaded ONNX ASR model"""
+    global onnx_manager
+    
     if onnx_manager is None:
         raise HTTPException(status_code=503, detail="ONNX model manager not initialized")
     
