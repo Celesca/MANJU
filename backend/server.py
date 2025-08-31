@@ -18,7 +18,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # FastAPI and related imports
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -182,10 +182,10 @@ async def health_check():
 @app.post("/api/asr", response_model=ASRResponse)
 async def transcribe_audio(
     file: UploadFile = File(..., description="Audio file to transcribe"),
-    language: str = "th",
-    model_id: str = "biodatlab-small-combined",
-    use_vad: bool = True,
-    beam_size: int = 1
+    language: str = Form("th"),
+    model_id: str = Form("biodatlab-small-combined"),
+    use_vad: bool = Form(True),
+    beam_size: int = Form(1),
 ):
     """
     Transcribe audio file to Thai text using selected model
@@ -213,14 +213,22 @@ async def transcribe_audio(
     
     # Check if we need to switch models
     current_model_info = model_manager.get_current_model_info()
-    if current_model_info and current_model_info.get("id") != model_id:
-        logger.info(f"🔄 Switching model from {current_model_info.get('id')} to {model_id}")
+    try:
+        resolved_id = model_manager.resolve_model_id(model_id)
+    except Exception:
+        resolved_id = None
+    if not resolved_id:
+        valid = ", ".join([m["id"] for m in model_manager.get_available_models()])
+        raise HTTPException(status_code=400, detail=f"Unknown model_id '{model_id}'. Valid options: {valid}")
+
+    if current_model_info and current_model_info.get("id") != resolved_id:
+        logger.info(f"🔄 Switching model from {current_model_info.get('id')} to {model_id} (resolved='{resolved_id}')")
         try:
-            model_manager.load_model(model_id)
+            model_manager.load_model(resolved_id)
         except Exception as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to load model '{model_id}': {str(e)}"
+                detail=f"Failed to load model '{model_id}' (resolved '{resolved_id}'): {str(e)}"
             )
     
     # Validate file
@@ -335,10 +343,10 @@ async def load_model(model_id: str):
 @app.post("/api/asr/batch")
 async def transcribe_batch(
     files: list[UploadFile] = File(..., description="Audio files to transcribe"),
-    language: str = "th",
-    model_id: str = "biodatlab-small-combined",
-    use_vad: bool = True,
-    beam_size: int = 1
+    language: str = Form("th"),
+    model_id: str = Form("biodatlab-small-combined"),
+    use_vad: bool = Form(True),
+    beam_size: int = Form(1),
 ):
     """
     Transcribe multiple audio files
@@ -364,13 +372,20 @@ async def transcribe_batch(
     
     # Check if we need to switch models
     current_model_info = model_manager.get_current_model_info()
-    if current_model_info and current_model_info.get("id") != model_id:
+    try:
+        resolved_id = model_manager.resolve_model_id(model_id)
+    except Exception:
+        resolved_id = None
+    if not resolved_id:
+        valid = ", ".join([m["id"] for m in model_manager.get_available_models()])
+        raise HTTPException(status_code=400, detail=f"Unknown model_id '{model_id}'. Valid options: {valid}")
+    if current_model_info and current_model_info.get("id") != resolved_id:
         try:
-            model_manager.load_model(model_id)
+            model_manager.load_model(resolved_id)
         except Exception as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to load model '{model_id}': {str(e)}"
+                detail=f"Failed to load model '{model_id}' (resolved '{resolved_id}'): {str(e)}"
             )
     
     if len(files) > 10:
