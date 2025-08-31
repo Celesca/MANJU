@@ -394,7 +394,13 @@ async def health_check():
     """Health check endpoint for ONNX server"""
     uptime = time.time() - start_time
     
-    current_model = onnx_manager.get_current_model_info() if onnx_manager else None
+    current_model = None
+    if onnx_manager is not None:
+        try:
+            current_model = onnx_manager.get_current_model_info()
+        except Exception:
+            current_model = None
+    
     sherpa_version = getattr(sherpa_onnx, '__version__', None) if SHERPA_AVAILABLE else None
     
     return ONNXHealthResponse(
@@ -443,7 +449,12 @@ async def transcribe_audio_onnx(
             )
     
     # Check if we need to switch models
-    current_model_info = onnx_manager.get_current_model_info()
+    current_model_info = None
+    try:
+        current_model_info = onnx_manager.get_current_model_info()
+    except Exception:
+        current_model_info = None
+        
     if current_model_info and current_model_info.get("id") != model_id:
         logger.info(f"🔄 Switching ONNX model from {current_model_info.get('id')} to {model_id}")
         try:
@@ -522,18 +533,27 @@ async def transcribe_audio_onnx(
 @app.get("/api/onnx/models", response_model=ONNXModelListResponse)
 async def get_available_onnx_models():
     """Get list of available ONNX models"""
-    if onnx_manager is None:
-        onnx_manager_instance = SherpaONNXManager()
-    else:
-        onnx_manager_instance = onnx_manager
-    
-    available_models = onnx_manager_instance.get_available_models()
-    current_model = onnx_manager_instance.get_current_model_info()
-    
-    return ONNXModelListResponse(
-        models=[ONNXModelInfo(**model) for model in available_models],
-        current_model=current_model
-    )
+    try:
+        if onnx_manager is None:
+            onnx_manager_instance = SherpaONNXManager()
+        else:
+            onnx_manager_instance = onnx_manager
+        
+        available_models = onnx_manager_instance.get_available_models()
+        
+        current_model = None
+        try:
+            current_model = onnx_manager_instance.get_current_model_info()
+        except Exception:
+            current_model = None
+        
+        return ONNXModelListResponse(
+            models=[ONNXModelInfo(**model) for model in available_models],
+            current_model=current_model
+        )
+    except Exception as e:
+        logger.error(f"❌ Error getting ONNX models: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get ONNX models: {str(e)}")
 
 
 @app.post("/api/onnx/models/{model_id}/load")
@@ -551,10 +571,18 @@ async def load_onnx_model(model_id: str):
     try:
         logger.info(f"/api/onnx/models/{model_id}/load called")
         onnx_manager.load_model(model_id)
+        
+        # Get model info safely
+        model_info = None
+        try:
+            model_info = onnx_manager.get_current_model_info()
+        except Exception:
+            model_info = {"id": model_id, "status": "loaded"}
+        
         return {
             "status": "success",
             "message": f"ONNX model '{model_id}' loaded successfully",
-            "model_info": onnx_manager.get_current_model_info()
+            "model_info": model_info
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -566,14 +594,21 @@ async def load_onnx_model(model_id: str):
 @app.get("/api/onnx/info")
 async def get_onnx_asr_info():
     """Get information about the loaded ONNX ASR model"""
-    if onnx_manager is None or onnx_manager.recognizer is None:
-        raise HTTPException(status_code=503, detail="ONNX ASR model not available")
+    if onnx_manager is None:
+        raise HTTPException(status_code=503, detail="ONNX model manager not initialized")
     
-    current_model_info = onnx_manager.get_current_model_info()
-    if not current_model_info:
-        raise HTTPException(status_code=503, detail="No ONNX model information available")
+    if onnx_manager.recognizer is None:
+        raise HTTPException(status_code=503, detail="ONNX ASR model not loaded")
     
-    return current_model_info
+    try:
+        current_model_info = onnx_manager.get_current_model_info()
+        if not current_model_info:
+            raise HTTPException(status_code=503, detail="No ONNX model information available")
+        
+        return current_model_info
+    except Exception as e:
+        logger.error(f"❌ Error getting ONNX model info: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get ONNX model info: {str(e)}")
 
 
 # Root endpoint
