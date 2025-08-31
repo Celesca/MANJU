@@ -350,7 +350,12 @@ def initialize_onnx_model(model_id: str = "whisper-large-v3-onnx"):
             onnx_manager = SherpaONNXManager()
         
         logger.info(f"📦 Loading ONNX model: {model_id}")
-        onnx_manager.load_model(model_id)
+        success = onnx_manager.load_model(model_id)
+        
+        if not success or onnx_manager.recognizer is None:
+            logger.error("❌ ONNX model loading failed - recognizer is None")
+            onnx_manager = None
+            raise RuntimeError("ONNX model loading failed")
         
         info = onnx_manager.get_current_model_info() or {}
         logger.info(f"📌 Loaded ONNX model: {info.get('name', 'unknown')}")
@@ -360,6 +365,7 @@ def initialize_onnx_model(model_id: str = "whisper-large-v3-onnx"):
     except Exception as e:
         logger.error(f"❌ Failed to initialize ONNX ASR model: {e}")
         onnx_manager = None
+        raise
 
 
 # Initialize model on startup
@@ -372,7 +378,11 @@ async def startup_event():
         logger.error("❌ Sherpa-ONNX not available! Install with: pip install sherpa-onnx")
         logger.error("   Server will start but ONNX features will be disabled")
     else:
-        initialize_onnx_model()
+        try:
+            initialize_onnx_model()
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ONNX model on startup: {e}")
+            logger.error("   Server will start but model loading may be required on first request")
     
     # Create directories
     os.makedirs("models/onnx", exist_ok=True)
@@ -442,11 +452,19 @@ async def transcribe_audio_onnx(
     if onnx_manager is None or onnx_manager.recognizer is None:
         try:
             initialize_onnx_model(model_id)
-        except Exception:
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ONNX model: {e}")
             raise HTTPException(
                 status_code=503,
                 detail="ONNX ASR model not available. Please check server health."
             )
+    
+    # Verify onnx_manager is still valid after initialization
+    if onnx_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ONNX model manager failed to initialize"
+        )
     
     # Check if we need to switch models
     current_model_info = None
@@ -457,6 +475,16 @@ async def transcribe_audio_onnx(
         
     if current_model_info and current_model_info.get("id") != model_id:
         logger.info(f"🔄 Switching ONNX model from {current_model_info.get('id')} to {model_id}")
+        try:
+            onnx_manager.load_model(model_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load ONNX model '{model_id}': {str(e)}"
+            )
+    elif not current_model_info:
+        # No model loaded, try to load the requested one
+        logger.info(f"🔄 Loading initial ONNX model: {model_id}")
         try:
             onnx_manager.load_model(model_id)
         except Exception as e:
@@ -495,6 +523,14 @@ async def transcribe_audio_onnx(
         
         # Transcribe audio using ONNX manager
         logger.info("🎵 Starting ONNX transcription...")
+        
+        # Final check before transcription
+        if onnx_manager is None or onnx_manager.recognizer is None:
+            raise HTTPException(
+                status_code=503,
+                detail="ONNX model not properly loaded"
+            )
+        
         result = onnx_manager.transcribe(temp_file)
         
         logger.info(f"🧾 ONNX transcribed with model='{result.get('model','')}', device='{result.get('device','')}'")
