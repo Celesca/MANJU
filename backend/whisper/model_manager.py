@@ -79,6 +79,17 @@ class ModelManager:
                 description="Medium model with faster-whisper, good balance of speed and accuracy",
                 performance_tier="fast"
             ),
+            
+            "biodatlab-medium-faster": ModelInfo(
+                name="biodatlab-medium-faster",
+                display_name="Biodatlab Whisper Thai Medium (Faster)",
+                model_type=ModelType.FASTER_WHISPER,
+                model_path="Vinxscribe/biodatlab-whisper-th-medium-faster",
+                language="th",
+                description="Thai-optimized medium model with faster-whisper, excellent balance of speed and accuracy for Thai language",
+                performance_tier="balanced",
+                recommended=True
+            ),
 
             "biodatlab-small-combined": ModelInfo(
                 name="biodatlab-small-combined",
@@ -148,6 +159,12 @@ class ModelManager:
             "biodat_small_combined": "biodatlab-small-combined",
             "biodatlab-small": "biodatlab-small-combined",
             "biodatlabsmallcombined": "biodatlab-small-combined",
+            
+            # New aliases for medium faster model
+            "biodat-medium-faster": "biodatlab-medium-faster",
+            "biodat_medium_faster": "biodatlab-medium-faster",
+            "biodatlab-medium": "biodatlab-medium-faster",
+            "biodatlabmediumfaster": "biodatlab-medium-faster",
         }
         if requested_id in aliases:
             return aliases[requested_id]

@@ -61,7 +61,7 @@ class ASRResponse(BaseModel):
 class ASRRequest(BaseModel):
     """Request model for ASR configuration"""
     language: str = "th"
-    model_id: str = "biodatlab-small-combined"  # Default to recommended model
+    model_id: str = "biodatlab-medium-faster"  # Default to recommended model
     use_vad: bool = True
     beam_size: int = 1
 
@@ -117,7 +117,7 @@ start_time = time.time()
 
 
 # Initialize ASR model
-def initialize_asr_model(model_id: str = "biodatlab-small-combined"):
+def initialize_asr_model(model_id: str = "biodatlab-medium-faster"):
     """Initialize the Thai ASR model with GPU optimization"""
     global model_manager
     
@@ -204,7 +204,7 @@ async def health_check():
 async def transcribe_audio(
     file: UploadFile = File(..., description="Audio file to transcribe"),
     language: str = Form("th"),
-    model_id: str = Form("biodatlab-small-combined"),
+    model_id: str = Form("biodatlab-medium-faster"),
     use_vad: bool = Form(True),
     beam_size: int = Form(1),
 ):
@@ -365,7 +365,7 @@ async def load_model(model_id: str):
 async def transcribe_batch(
     files: list[UploadFile] = File(..., description="Audio files to transcribe"),
     language: str = Form("th"),
-    model_id: str = Form("biodatlab-small-combined"),
+    model_id: str = Form("biodatlab-medium-faster"),
     use_vad: bool = Form(True),
     beam_size: int = Form(1),
 ):
@@ -460,7 +460,7 @@ async def get_asr_info():
 
 # Reload model endpoint (for development/debugging)
 @app.post("/api/asr/reload")
-async def reload_asr_model(model_id: str = "biodatlab-small-combined"):
+async def reload_asr_model(model_id: str = "biodatlab-medium-faster"):
     """Reload the ASR model (admin endpoint)"""
     try:
         logger.info(f"🔄 Reloading ASR model: {model_id}")
@@ -499,6 +499,7 @@ async def root():
         },
         "supported_models": [
             "biodatlab-faster (recommended)",
+            "biodatlab-medium-faster (recommended)", 
             "pathumma-large (recommended)", 
             "large-v3-faster",
             "large-v3-standard",
