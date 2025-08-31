@@ -227,16 +227,20 @@ class ModelManager:
         except ImportError:
             from faster_whisper_thai import WhisperConfig, create_thai_asr
         
-        # Create configuration
+        # Create configuration with GPU optimization
         config = WhisperConfig(
             model_name=model_info.model_path,
             language=model_info.language,
             device="auto",
-            compute_type="int8_float16",
+            compute_type="float16",  # Optimized for GPU performance
+            gpu_memory_fraction=0.8,  # 80% GPU utilization
+            num_workers=4,  # Increased for better GPU utilization
+            cpu_threads=8,  # Optimized threading
             beam_size=1,
             use_vad=True,
-            chunk_length_ms=30000,
-            overlap_ms=1000
+            chunk_length_ms=20000,  # Optimized chunk size
+            overlap_ms=500,  # Reduced overlap for speed
+            batch_size=8  # Increased batch size for GPU efficiency
         )
         
         # Apply config overrides
@@ -254,10 +258,10 @@ class ModelManager:
         except ImportError:
             from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig, SimplePipelineASR
         
-        # Create configurations
+        # Create configurations with GPU optimization
         audio_config = AudioConfig(
-            chunk_length_ms=27000,
-            overlap_ms=2000,
+            chunk_length_ms=20000,  # Reduced for better parallelization
+            overlap_ms=1000,  # Optimized overlap
             min_chunk_length_ms=1000,
             sample_rate=16000,
             channels=1
@@ -267,10 +271,11 @@ class ModelManager:
             model_name=model_info.model_path,
             language=model_info.language,
             task="transcribe",
-            batch_size=4,
-            max_workers=2,
+            batch_size=8,  # Increased batch size for GPU
+            max_workers=4,  # Increased workers for better GPU utilization
             use_gpu=True,
-            use_faster_whisper=False  # Force standard whisper
+            use_faster_whisper=False,  # Force standard whisper
+            gpu_memory_fraction=0.8  # 80% GPU utilization
         )
         
         # Apply config overrides

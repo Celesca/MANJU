@@ -19,32 +19,36 @@ os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
 @dataclass
 class WhisperConfig:
-    """Configuration for faster-whisper Thai ASR"""
+    """Configuration for faster-whisper Thai ASR with optimized GPU utilization"""
     
     # Model configuration - Using the specific Thai model from Hugging Face
     model_name: str = "Vinxscribe/biodatlab-whisper-th-large-v3-faster"  # Optimized Thai model
     language: str = "th"
     task: str = "transcribe"
     
-    # Device and compute settings
+    # Device and compute settings - Optimized for 80% GPU utilization
     device: str = "auto"  # "cuda", "cpu", or "auto"
-    compute_type: str = "int8_float16"  # "int8", "int8_float16", "float16", "float32"
+    compute_type: str = "float16"  # Changed to float16 for better GPU performance
+    gpu_memory_fraction: float = 0.8  # 80% GPU memory utilization
+    num_workers: int = 4  # Increased for better GPU utilization
+    cpu_threads: int = 8  # Optimized for multi-threading
     
-    # Audio processing
-    chunk_length_ms: int = 30000  # 30 seconds optimal for faster-whisper
-    overlap_ms: int = 1000  # Minimal overlap for speed
+    # Audio processing - Optimized for faster batch processing
+    chunk_length_ms: int = 20000  # Reduced for better parallelization
+    overlap_ms: int = 500  # Reduced overlap for speed
     sample_rate: int = 16000
     channels: int = 1
+    batch_size: int = 8  # Increased batch size for GPU efficiency
     
-    # Transcription parameters
+    # Transcription parameters - Optimized for speed
     beam_size: int = 1  # Lower for speed, higher for accuracy
     best_of: int = 1
-    patience: float = 1.0
+    patience: float = 0.8  # Reduced for faster processing
     temperature: float = 0.0
     
     # VAD (Voice Activity Detection) settings
     use_vad: bool = True
-    vad_threshold: float = 0.35
+    vad_threshold: float = 0.3  # Slightly more aggressive for speed
     
     # Quality thresholds
     no_speech_threshold: float = 0.6
@@ -62,13 +66,28 @@ class FasterWhisperThai:
         self._load_model()
     
     def _setup_device(self):
-        """Setup computing device"""
+        """Setup computing device with optimized GPU utilization"""
         if self.config.device == "auto":
             try:
                 import torch
                 if torch.cuda.is_available():
                     self.device = "cuda"
-                    print("🚀 Using CUDA GPU acceleration")
+                    # Set GPU memory fraction for 80% utilization
+                    if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
+                        torch.cuda.set_per_process_memory_fraction(self.config.gpu_memory_fraction)
+                    
+                    # Set GPU device count for multi-GPU systems
+                    gpu_count = torch.cuda.device_count()
+                    print(f"🚀 Using CUDA GPU acceleration ({gpu_count} GPUs available)")
+                    print(f"💾 GPU memory utilization set to {self.config.gpu_memory_fraction*100}%")
+                    
+                    # Enable optimized attention for better GPU performance
+                    if hasattr(torch.backends.cuda, 'enable_flash_sdp'):
+                        torch.backends.cuda.enable_flash_sdp(True)
+                    
+                    # Set CUDA optimizations
+                    torch.backends.cudnn.benchmark = True
+                    torch.backends.cudnn.deterministic = False
                 else:
                     self.device = "cpu"
                     print("💻 Using CPU (consider GPU for better performance)")
@@ -78,10 +97,16 @@ class FasterWhisperThai:
         else:
             self.device = self.config.device
         
-        # Adjust compute type for CPU
-        if self.device == "cpu" and self.config.compute_type in ["int8_float16", "float16"]:
-            self.config.compute_type = "int8"
-            print("⚠️ Adjusted compute_type to 'int8' for CPU compatibility")
+        # Optimize compute type for device
+        if self.device == "cpu":
+            if self.config.compute_type in ["float16", "int8_float16"]:
+                self.config.compute_type = "int8"
+                print("⚠️ Adjusted compute_type to 'int8' for CPU compatibility")
+        else:
+            # For GPU, use float16 for optimal performance
+            if self.config.compute_type == "int8_float16":
+                self.config.compute_type = "float16"
+                print("🚀 Using float16 for optimal GPU performance")
     
     def _load_model(self):
         """Load the faster-whisper model with safetensors support"""
@@ -124,8 +149,8 @@ class FasterWhisperThai:
                     "large-v3",
                     device=self.device,
                     compute_type=self.config.compute_type,
-                    cpu_threads=4 if self.device == "cpu" else 0,
-                    num_workers=1,
+                    cpu_threads=self.config.cpu_threads if self.device == "cpu" else 0,
+                    num_workers=self.config.num_workers,
                     download_root=None,
                     local_files_only=False
                 )
@@ -142,14 +167,14 @@ class FasterWhisperThai:
         import os
         
         try:
-            # Try loading with native safetensors support
+            # Try loading with native safetensors support and GPU optimization
             # Modern faster-whisper versions can read safetensors directly
             return WhisperModel(
                 self.config.model_name,
                 device=self.device,
                 compute_type=self.config.compute_type,
-                cpu_threads=4 if self.device == "cpu" else 0,
-                num_workers=1,
+                cpu_threads=self.config.cpu_threads if self.device == "cpu" else 0,
+                num_workers=self.config.num_workers,
                 download_root=None,
                 local_files_only=False
             )
@@ -174,8 +199,8 @@ class FasterWhisperThai:
                     cache_dir,
                     device=self.device,
                     compute_type=self.config.compute_type,
-                    cpu_threads=4 if self.device == "cpu" else 0,
-                    num_workers=1,
+                    cpu_threads=self.config.cpu_threads if self.device == "cpu" else 0,
+                    num_workers=self.config.num_workers,
                     local_files_only=True
                 )
             
