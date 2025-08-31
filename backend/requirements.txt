@@ -53,3 +53,9 @@ faster-whisper>=0.10.0
 
 # Audio processing for server
 ffmpeg-python>=0.2.0
+
+# ONNX Runtime and Sherpa-ONNX for fast inference
+sherpa-onnx>=1.9.0
+onnxruntime>=1.16.0
+soundfile>=0.12.1
+scipy>=1.10.0
