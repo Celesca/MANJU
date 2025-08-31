@@ -125,6 +125,43 @@ class ModelManager:
         }
         
         return models
+
+    def _normalize_id(self, s: str) -> str:
+        """Normalize user-provided model id for fuzzy matching."""
+        return "".join(ch for ch in s.lower() if ch.isalnum())
+
+    def resolve_model_id(self, requested_id: str) -> Optional[str]:
+        """Resolve user-provided model_id to a canonical key.
+
+        Supports simple aliases and fuzzy normalization (lowercase, strip non-alnum).
+        """
+        if not requested_id:
+            return None
+
+        # Exact match
+        if requested_id in self.available_models:
+            return requested_id
+
+        # Aliases
+        aliases = {
+            "biodat-small-combined": "biodatlab-small-combined",
+            "biodat_small_combined": "biodatlab-small-combined",
+            "biodatlab-small": "biodatlab-small-combined",
+            "biodatlabsmallcombined": "biodatlab-small-combined",
+        }
+        if requested_id in aliases:
+            return aliases[requested_id]
+
+        # Fuzzy normalization
+        norm = self._normalize_id(requested_id)
+        for key in self.available_models.keys():
+            if self._normalize_id(key) == norm:
+                return key
+        for alias_key, target in aliases.items():
+            if self._normalize_id(alias_key) == norm:
+                return target
+
+        return None
     
     def get_available_models(self) -> List[Dict[str, Any]]:
         """Get list of available models for API response"""
@@ -154,11 +191,16 @@ class ModelManager:
         Returns:
             Loaded model instance
         """
-        if model_id not in self.available_models:
-            raise ValueError(f"Unknown model ID: {model_id}")
-        
-        model_info = self.available_models[model_id]
-        logger.info(f"🔄 Loading model: {model_info.display_name}")
+        resolved_id = self.resolve_model_id(model_id)
+        if not resolved_id or resolved_id not in self.available_models:
+            valid = ", ".join(sorted(self.available_models.keys()))
+            raise ValueError(f"Unknown model ID: '{model_id}'. Valid options: {valid}")
+
+        model_info = self.available_models[resolved_id]
+        logger.info(
+            f"🔄 Loading model (requested='{model_id}', resolved='{resolved_id}'): "
+            f"{model_info.display_name} | type={model_info.model_type.value} | path={model_info.model_path}"
+        )
         
         try:
             if model_info.model_type == ModelType.FASTER_WHISPER:
@@ -169,7 +211,9 @@ class ModelManager:
             self.current_model = model
             self.current_model_info = model_info
             
-            logger.info(f"✅ Model loaded successfully: {model_info.display_name}")
+            logger.info(
+                f"✅ Model loaded successfully: id='{resolved_id}', name='{model_info.display_name}', path='{model_info.model_path}'"
+            )
             return model
             
         except Exception as e:

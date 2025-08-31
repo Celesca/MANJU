@@ -127,8 +127,12 @@ def initialize_asr_model(model_id: str = "biodatlab-faster"):
         if model_manager is None:
             model_manager = get_model_manager()
         
-        logger.info(f"📦 Loading model: {model_id}")
+        logger.info(f"📦 Loading model: requested_id='{model_id}'")
         model_manager.load_model(model_id)
+        info = model_manager.get_current_model_info() or {}
+        logger.info(
+            f"📌 Loaded model resolved_id='{info.get('id','unknown')}', name='{info.get('name','')}', path='{info.get('model_path','')}'"
+        )
         
         logger.info("✅ Thai ASR model initialized successfully!")
         
@@ -196,6 +200,7 @@ async def transcribe_audio(
     Returns:
         ASRResponse with transcription and metadata
     """
+    logger.info(f"/api/asr called with model_id='{model_id}', language='{language}', file='{file.filename}'")
     if model_manager is None or model_manager.current_model is None:
         # Try to initialize with requested model
         try:
@@ -249,6 +254,10 @@ async def transcribe_audio(
         # Transcribe audio using model manager
         logger.info("🎵 Starting transcription...")
         result = model_manager.transcribe_with_current_model(temp_file)
+        used = model_manager.get_current_model_info() or {}
+        logger.info(
+            f"🧾 Transcribed with model_id='{used.get('id','unknown')}', name='{used.get('name','')}', path='{used.get('model_path','')}', device='{result.get('device','')}'"
+        )
         
         # Create response
         response = ASRResponse(
@@ -267,6 +276,9 @@ async def transcribe_audio(
         logger.info(f"✅ Transcription completed: {len(result['text'])} characters")
         return response
         
+    except (KeyboardInterrupt, SystemExit) as e:
+        logger.error(f"🛑 Server interrupt during transcription: {e}")
+        raise HTTPException(status_code=500, detail="Server interrupted during transcription")
     except Exception as e:
         logger.error(f"❌ Transcription failed: {e}")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
@@ -306,6 +318,7 @@ async def load_model(model_id: str):
         raise HTTPException(status_code=503, detail="Model manager not available")
     
     try:
+        logger.info(f"/api/models/{model_id}/load called")
         model_manager.load_model(model_id)
         return {
             "status": "success", 
