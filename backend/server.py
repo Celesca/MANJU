@@ -61,7 +61,7 @@ class ASRResponse(BaseModel):
 class ASRRequest(BaseModel):
     """Request model for ASR configuration"""
     language: str = "th"
-    model_id: str = "biodatlab-faster"  # Default to recommended model
+    model_id: str = "biodatlab-small-combined"  # Default to recommended model
     use_vad: bool = True
     beam_size: int = 1
 
@@ -117,7 +117,7 @@ start_time = time.time()
 
 
 # Initialize ASR model
-def initialize_asr_model(model_id: str = "biodatlab-faster"):
+def initialize_asr_model(model_id: str = "biodatlab-small-combined"):
     """Initialize the Thai ASR model"""
     global model_manager
     
@@ -183,7 +183,7 @@ async def health_check():
 async def transcribe_audio(
     file: UploadFile = File(..., description="Audio file to transcribe"),
     language: str = "th",
-    model_id: str = "biodatlab-faster",
+    model_id: str = "biodatlab-small-combined",
     use_vad: bool = True,
     beam_size: int = 1
 ):
@@ -336,7 +336,7 @@ async def load_model(model_id: str):
 async def transcribe_batch(
     files: list[UploadFile] = File(..., description="Audio files to transcribe"),
     language: str = "th",
-    model_id: str = "biodatlab-faster",
+    model_id: str = "biodatlab-small-combined",
     use_vad: bool = True,
     beam_size: int = 1
 ):
@@ -424,7 +424,7 @@ async def get_asr_info():
 
 # Reload model endpoint (for development/debugging)
 @app.post("/api/asr/reload")
-async def reload_asr_model(model_id: str = "biodatlab-faster"):
+async def reload_asr_model(model_id: str = "biodatlab-small-combined"):
     """Reload the ASR model (admin endpoint)"""
     try:
         logger.info(f"🔄 Reloading ASR model: {model_id}")
