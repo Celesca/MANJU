@@ -5,12 +5,13 @@ Serves faster-whisper Thai models with WebSocket interface for real-time transcr
 
 Features:
 - WebSocket-based real-time audio streaming
-- GPU-optimized faster-whisper Thai models (80% GPU utilization)
+- GPU-optimized faster-whisper Thai models (95% GPU utilization)
 - Voice Activity Detection (VAD)
 - Real-time and final transcription results
 - Multiple client support
 - Audio chunking and buffering
 - Thai language optimized settings
+- Maximum GPU memory utilization for speed
 
 Usage:
     python realtime_thai_asr_server.py [OPTIONS]
@@ -426,6 +427,14 @@ async def load_model(model_id: str):
     try:
         logger.info(f"🔄 Loading model: {model_id}")
         
+        # Log GPU optimization settings
+        logger.info("🚀 GPU Optimization Settings:")
+        logger.info("   - GPU Memory Fraction: 95% (maximum utilization)")
+        logger.info("   - Compute Type: float16 (GPU optimized)")
+        logger.info("   - High Batch Sizes: 16-24 (depending on model)")
+        logger.info("   - Parallel Workers: 8")
+        logger.info("   - Beam Size: 3 (quality + speed balance)")
+        
         # Create appropriate config based on model_id
         if model_id == "biodatlab-medium-faster":
             config = WhisperConfig(
@@ -433,31 +442,41 @@ async def load_model(model_id: str):
                 language="th",
                 device="auto",
                 compute_type="float16",
-                gpu_memory_fraction=0.8,
-                batch_size=8,
-                num_workers=4
+                gpu_memory_fraction=0.95,  # Increased from 0.8 to 0.95
+                batch_size=16,  # Increased from 8 to 16
+                num_workers=8,  # Increased from 4 to 8
+                beam_size=3,    # Increased for better accuracy
+                chunk_length_ms=15000,  # Smaller chunks for faster processing
+                overlap_ms=300
             )
         elif model_id == "biodatlab-faster":
-            # Fix: Use the correct large model path
+            # Fix: Use the correct large model path with max GPU optimization
             config = WhisperConfig(
                 model_name="Vinxscribe/biodatlab-whisper-th-large-v3-faster",
                 language="th", 
                 device="auto",
                 compute_type="float16",
-                gpu_memory_fraction=0.8,
-                batch_size=8,
-                num_workers=4
+                gpu_memory_fraction=0.95,  # Max GPU usage
+                batch_size=20,  # Higher batch size for large model
+                num_workers=8,
+                beam_size=3,
+                chunk_length_ms=15000,
+                overlap_ms=300
             )
         elif model_id == "biodatlab-large-faster":
-            # Add this as a separate option for the large model
+            # Optimized config for large model with maximum GPU utilization
             config = WhisperConfig(
                 model_name="Vinxscribe/biodatlab-whisper-th-large-v3-faster",
                 language="th",
                 device="auto", 
                 compute_type="float16",
-                gpu_memory_fraction=0.8,
-                batch_size=8,
-                num_workers=4
+                gpu_memory_fraction=0.95,  # Use 95% of GPU RAM
+                batch_size=24,  # Higher batch size for large model
+                num_workers=8,  # Maximize parallel processing
+                beam_size=3,    # Better quality with more GPU
+                chunk_length_ms=15000,  # Optimized chunk size
+                overlap_ms=300,
+                cpu_threads=16  # Increased CPU threads
             )
         elif model_id == "pathumma-large":
             config = WhisperConfig(
@@ -465,21 +484,28 @@ async def load_model(model_id: str):
                 language="th",
                 device="auto", 
                 compute_type="float16",
-                gpu_memory_fraction=0.8,
-                batch_size=8,
-                num_workers=4
+                gpu_memory_fraction=0.95,  # Max GPU usage
+                batch_size=20,  # Higher batch size
+                num_workers=8,
+                beam_size=3,
+                chunk_length_ms=15000,
+                overlap_ms=300
             )
         else:
-            # Default config with the large model
+            # Default config with maximum GPU optimization
             logger.warning(f"Unknown model_id '{model_id}', using default large model")
             config = WhisperConfig(
                 model_name="Vinxscribe/biodatlab-whisper-th-large-v3-faster",
                 language="th",
                 device="auto",
                 compute_type="float16", 
-                gpu_memory_fraction=0.8,
-                batch_size=8,
-                num_workers=4
+                gpu_memory_fraction=0.95,  # Max GPU utilization
+                batch_size=24,  # Large batch size
+                num_workers=8,
+                beam_size=3,
+                chunk_length_ms=15000,
+                overlap_ms=300,
+                cpu_threads=16
             )
         
         # Initialize new ASR instance with the specific config
