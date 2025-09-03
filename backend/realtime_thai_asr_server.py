@@ -478,7 +478,7 @@ async def load_model(model_id: str):
 
 # WebSocket server handlers
 
-async def control_handler(websocket: WebSocketServerProtocol, path: str):
+async def control_handler(websocket: WebSocketServerProtocol):
     """Handle control WebSocket connections"""
     logger.info(f"🔌 Control client connected: {websocket.remote_address}")
     control_connections.add(websocket)
@@ -507,7 +507,7 @@ async def control_handler(websocket: WebSocketServerProtocol, path: str):
     finally:
         control_connections.discard(websocket)
 
-async def audio_handler(websocket: WebSocketServerProtocol, path: str):
+async def audio_handler(websocket: WebSocketServerProtocol):
     """Handle audio WebSocket connections"""
     logger.info(f"🎵 Audio client connected: {websocket.remote_address}")
     audio_connections.add(websocket)
@@ -562,27 +562,28 @@ async def start_servers():
     # Start control server
     control_server = await websockets.serve(
         control_handler,
-        "localhost",
+        "0.0.0.0",  # Listen on all interfaces for ngrok
         CONTROL_PORT,
         ping_interval=20,
         ping_timeout=10
     )
-    logger.info(f"🔧 Control server started on ws://localhost:{CONTROL_PORT}")
+    logger.info(f"🔧 Control server started on ws://0.0.0.0:{CONTROL_PORT}")
     
     # Start audio server
     audio_server = await websockets.serve(
         audio_handler,
-        "localhost",
+        "0.0.0.0",  # Listen on all interfaces for ngrok
         AUDIO_PORT,
         ping_interval=20,
         ping_timeout=10
     )
-    logger.info(f"🎵 Audio server started on ws://localhost:{AUDIO_PORT}")
+    logger.info(f"🎵 Audio server started on ws://0.0.0.0:{AUDIO_PORT}")
     
     logger.info("✅ Thai ASR WebSocket servers are ready!")
     logger.info("📖 Usage:")
-    logger.info(f"   - Control: ws://localhost:{CONTROL_PORT}")
-    logger.info(f"   - Audio: ws://localhost:{AUDIO_PORT}")
+    logger.info(f"   - Control: ws://0.0.0.0:{CONTROL_PORT}")
+    logger.info(f"   - Audio: ws://0.0.0.0:{AUDIO_PORT}")
+    logger.info("🌐 Use ngrok to expose these ports for external access")
     
     # Keep servers running
     await asyncio.gather(
@@ -600,9 +601,10 @@ def main():
         print("🎤 Thai ASR Real-time WebSocket Server")
         print("=" * 50)
         print(f"🚀 Starting servers...")
-        print(f"🔧 Control WebSocket: ws://localhost:{CONTROL_PORT}")
-        print(f"🎵 Audio WebSocket: ws://localhost:{AUDIO_PORT}")
+        print(f"🔧 Control WebSocket: ws://0.0.0.0:{CONTROL_PORT}")
+        print(f"🎵 Audio WebSocket: ws://0.0.0.0:{AUDIO_PORT}")
         print(f"📦 Default Model: {current_model_id}")
+        print("🌐 Use ngrok to expose ports for external access")
         print("=" * 50)
         
         # Run the servers

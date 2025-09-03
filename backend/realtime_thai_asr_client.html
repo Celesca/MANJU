@@ -221,6 +221,14 @@
     </div>
 
     <script>
+        // WebSocket configuration - Update these with your ngrok URLs from Colab
+        const WEBSOCKET_CONFIG = {
+            // Update these URLs with the output from your Colab ngrok setup:
+            // Example URLs (replace with your actual ngrok URLs):
+            controlUrl: 'ws://3ff5a8bf5b7f.ngrok-free.app',  // Control WebSocket (port 8765)
+            audioUrl: 'ws://cb6c356c1f8a.ngrok-free.app'     // Audio WebSocket (port 8766)
+        };
+
         // WebSocket connections
         let controlWs = null;
         let audioWs = null;
@@ -271,7 +279,7 @@
                 log('Connecting to Thai ASR server...', '🔌');
                 
                 // Connect to control WebSocket
-                controlWs = new WebSocket('ws://localhost:8765');
+                controlWs = new WebSocket(WEBSOCKET_CONFIG.controlUrl);
                 
                 controlWs.onopen = () => {
                     log('Control WebSocket connected', '✅');
@@ -292,7 +300,7 @@
                 };
                 
                 // Connect to audio WebSocket
-                audioWs = new WebSocket('ws://localhost:8766');
+                audioWs = new WebSocket(WEBSOCKET_CONFIG.audioUrl);
                 
                 audioWs.onopen = () => {
                     log('Audio WebSocket connected', '✅');
