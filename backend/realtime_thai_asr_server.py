@@ -154,7 +154,7 @@ control_connections: Set[WebSocketServerProtocol] = set()
 audio_connections: Set[WebSocketServerProtocol] = set()
 audio_queue = asyncio.Queue()
 is_recording = False
-current_model_id = "biodatlab-medium-faster"
+current_model_id = "biodatlab-large-faster"  # Use the working large model
 
 # Audio processing state
 audio_buffer = deque(maxlen=100)  # Store last 100 chunks
@@ -412,7 +412,15 @@ async def broadcast_to_audio_clients(message: Dict[str, Any]):
         audio_connections -= disconnected
 
 async def load_model(model_id: str):
-    """Load a specific Thai ASR model"""
+    """
+    Load a specific Thai ASR model
+    
+    Available models:
+    - biodatlab-medium-faster: Vinxscribe/biodatlab-whisper-th-medium-faster
+    - biodatlab-faster: Vinxscribe/biodatlab-whisper-th-large-v3-faster (legacy alias)
+    - biodatlab-large-faster: Vinxscribe/biodatlab-whisper-th-large-v3-faster
+    - pathumma-large: PathummaApiwat/Pathumma-whisper-large-v3-th
+    """
     global thai_asr, current_model_id
     
     try:
@@ -430,10 +438,22 @@ async def load_model(model_id: str):
                 num_workers=4
             )
         elif model_id == "biodatlab-faster":
+            # Fix: Use the correct large model path
             config = WhisperConfig(
-                model_name="Vinxscribe/biodatlab-whisper-th-faster",
+                model_name="Vinxscribe/biodatlab-whisper-th-large-v3-faster",
                 language="th", 
                 device="auto",
+                compute_type="float16",
+                gpu_memory_fraction=0.8,
+                batch_size=8,
+                num_workers=4
+            )
+        elif model_id == "biodatlab-large-faster":
+            # Add this as a separate option for the large model
+            config = WhisperConfig(
+                model_name="Vinxscribe/biodatlab-whisper-th-large-v3-faster",
+                language="th",
+                device="auto", 
                 compute_type="float16",
                 gpu_memory_fraction=0.8,
                 batch_size=8,
@@ -451,6 +471,7 @@ async def load_model(model_id: str):
             )
         else:
             # Default config with the large model
+            logger.warning(f"Unknown model_id '{model_id}', using default large model")
             config = WhisperConfig(
                 model_name="Vinxscribe/biodatlab-whisper-th-large-v3-faster",
                 language="th",
@@ -605,6 +626,10 @@ def main():
         print(f"🎵 Audio WebSocket: ws://0.0.0.0:{AUDIO_PORT}")
         print(f"📦 Default Model: {current_model_id}")
         print("🌐 Use ngrok to expose ports for external access")
+        print("📝 Available models:")
+        print("   - biodatlab-large-faster: Vinxscribe/biodatlab-whisper-th-large-v3-faster")
+        print("   - biodatlab-medium-faster: Vinxscribe/biodatlab-whisper-th-medium-faster") 
+        print("   - pathumma-large: PathummaApiwat/Pathumma-whisper-large-v3-th")
         print("=" * 50)
         
         # Run the servers
