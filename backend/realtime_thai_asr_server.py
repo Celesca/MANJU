@@ -157,6 +157,10 @@ audio_queue = asyncio.Queue()
 is_recording = False
 current_model_id = "biodatlab-large-faster"  # Use the working large model
 
+# Parallel processing
+transcription_semaphore = asyncio.Semaphore(4)  # Allow 4 concurrent transcriptions
+active_transcriptions = set()  # Track active transcription tasks
+
 # Audio processing state
 audio_buffer = deque(maxlen=100)  # Store last 100 chunks
 silence_counter = 0
@@ -238,8 +242,8 @@ async def handle_control_message(websocket: WebSocketServerProtocol, message: Di
         }))
 
 async def handle_audio_message(websocket: WebSocketServerProtocol, message: Dict[str, Any]):
-    """Handle audio WebSocket messages"""
-    global thai_asr, audio_processor, is_recording
+    """Handle audio WebSocket messages with parallel processing"""
+    global thai_asr, audio_processor, is_recording, active_transcriptions
     
     try:
         msg_type = message.get('type')
@@ -262,76 +266,85 @@ async def handle_audio_message(websocket: WebSocketServerProtocol, message: Dict
                     # Get accumulated audio for partial transcription
                     audio_data = audio_processor.get_audio_for_transcription()
                     if audio_data is not None:
-                        try:
-                            # Create a simple transcription for real-time feedback
-                            transcription = await transcribe_audio_data(audio_data)
-                            if transcription:
-                                # Broadcast realtime transcription to all audio clients
-                                await broadcast_to_audio_clients({
-                                    'type': 'realtime_transcription',
-                                    'text': transcription,
-                                    'timestamp': datetime.now().isoformat(),
-                                    'is_final': False
-                                })
-                        except Exception as e:
-                            logger.warning(f"Realtime transcription error: {e}")
+                        # Create parallel transcription task (don't await)
+                        task = asyncio.create_task(
+                            transcribe_realtime_parallel(audio_data, websocket)
+                        )
+                        active_transcriptions.add(task)
+                        # Clean up completed tasks
+                        task.add_done_callback(lambda t: active_transcriptions.discard(t))
         
         elif msg_type == 'audio_end':
-            # Process final transcription with accumulated audio
+            # Process final transcription with accumulated audio (parallel)
             if thai_asr and thai_asr.model is not None and audio_processor:
                 audio_data = audio_processor.get_audio_for_transcription()
                 if audio_data is not None:
-                    try:
-                        # Apply noise reduction
-                        audio_data = audio_processor.apply_noise_reduction(audio_data)
-                        
-                        # Get final transcription
-                        result = await transcribe_audio_data_full(audio_data)
-                        
-                        # Broadcast final transcription
-                        await broadcast_to_audio_clients({
-                            'type': 'final_transcription',
-                            'text': result.get('text', ''),
-                            'duration': result.get('duration', 0),
-                            'processing_time': result.get('processing_time', 0),
-                            'model': current_model_id,
-                            'timestamp': datetime.now().isoformat(),
-                            'is_final': True
-                        })
-                        
-                        # Clear the buffer
-                        audio_processor.clear_buffer()
-                    except Exception as e:
-                        logger.error(f"Final transcription error: {e}")
+                    # Create parallel final transcription task
+                    task = asyncio.create_task(
+                        transcribe_final_parallel(audio_data, websocket)
+                    )
+                    active_transcriptions.add(task)
+                    task.add_done_callback(lambda t: active_transcriptions.discard(t))
+                    
+                    # Clear the buffer immediately (don't wait for transcription)
+                    audio_processor.clear_buffer()
     
     except Exception as e:
         logger.error(f"Error handling audio message: {e}")
 
+async def transcribe_realtime_parallel(audio_data: np.ndarray, websocket: WebSocketServerProtocol):
+    """Parallel real-time transcription task"""
+    async with transcription_semaphore:  # Limit concurrent transcriptions
+        try:
+            transcription = await transcribe_audio_data(audio_data)
+            if transcription:
+                # Broadcast to all audio clients, not just the sender
+                await broadcast_to_audio_clients({
+                    'type': 'realtime_transcription',
+                    'text': transcription,
+                    'timestamp': datetime.now().isoformat(),
+                    'is_final': False
+                })
+        except Exception as e:
+            logger.warning(f"Parallel realtime transcription error: {e}")
+
+async def transcribe_final_parallel(audio_data: np.ndarray, websocket: WebSocketServerProtocol):
+    """Parallel final transcription task"""
+    async with transcription_semaphore:  # Limit concurrent transcriptions
+        try:
+            # Apply noise reduction
+            audio_data_filtered = audio_processor.apply_noise_reduction(audio_data) if audio_processor else audio_data
+            
+            # Get final transcription
+            result = await transcribe_audio_data_full(audio_data_filtered)
+            
+            # Broadcast to all audio clients
+            await broadcast_to_audio_clients({
+                'type': 'final_transcription',
+                'text': result.get('text', ''),
+                'duration': result.get('duration', 0),
+                'processing_time': result.get('processing_time', 0),
+                'model': current_model_id,
+                'timestamp': datetime.now().isoformat(),
+                'is_final': True
+            })
+            
+        except Exception as e:
+            logger.error(f"Parallel final transcription error: {e}")
+
 async def transcribe_audio_data(audio_data: np.ndarray) -> Optional[str]:
-    """Simple transcription for real-time feedback"""
+    """Simple transcription for real-time feedback (parallel)"""
     global thai_asr
     
     try:
         if not thai_asr or not thai_asr.model:
             return None
         
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-            audio_int16 = (audio_data * 32767).astype(np.int16)
-            
-            with wave.open(tmp_file.name, 'wb') as wav_file:
-                wav_file.setnchannels(CHANNELS)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(SAMPLE_RATE)
-                wav_file.writeframes(audio_int16.tobytes())
-            
-            temp_path = tmp_file.name
-        
-        # Quick transcription
-        result = thai_asr.transcribe(temp_path)
-        
-        # Clean up
-        os.unlink(temp_path)
+        # Run transcription in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, _transcribe_sync, audio_data, thai_asr
+        )
         
         return result.get('text', '').strip() if result else None
         
@@ -340,32 +353,22 @@ async def transcribe_audio_data(audio_data: np.ndarray) -> Optional[str]:
         return None
 
 async def transcribe_audio_data_full(audio_data: np.ndarray) -> Dict[str, Any]:
-    """Full transcription with detailed results"""
+    """Full transcription with detailed results (parallel)"""
     global thai_asr
     
     try:
         if not thai_asr or not thai_asr.model:
             return {'text': '', 'duration': 0, 'processing_time': 0}
         
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-            audio_int16 = (audio_data * 32767).astype(np.int16)
-            
-            with wave.open(tmp_file.name, 'wb') as wav_file:
-                wav_file.setnchannels(CHANNELS)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(SAMPLE_RATE)
-                wav_file.writeframes(audio_int16.tobytes())
-            
-            temp_path = tmp_file.name
-        
-        # Full transcription with timing
+        # Run transcription in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
         start_time = time.time()
-        result = thai_asr.transcribe(temp_path)
-        processing_time = time.time() - start_time
         
-        # Clean up
-        os.unlink(temp_path)
+        result = await loop.run_in_executor(
+            None, _transcribe_sync, audio_data, thai_asr
+        )
+        
+        processing_time = time.time() - start_time
         
         # Add timing information
         if result:
@@ -377,6 +380,33 @@ async def transcribe_audio_data_full(audio_data: np.ndarray) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Full transcription error: {e}")
         return {'text': '', 'duration': 0, 'processing_time': 0}
+
+def _transcribe_sync(audio_data: np.ndarray, asr_model: FasterWhisperThai) -> Optional[Dict[str, Any]]:
+    """Synchronous transcription function for thread pool execution"""
+    try:
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            
+            with wave.open(tmp_file.name, 'wb') as wav_file:
+                wav_file.setnchannels(CHANNELS)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(SAMPLE_RATE)
+                wav_file.writeframes(audio_int16.tobytes())
+            
+            temp_path = tmp_file.name
+        
+        # Transcribe
+        result = asr_model.transcribe(temp_path)
+        
+        # Clean up
+        os.unlink(temp_path)
+        
+        return result
+        
+    except Exception as e:
+        logger.warning(f"Sync transcription error: {e}")
+        return None
 
 # Utility functions
 
