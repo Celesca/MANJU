@@ -4,14 +4,15 @@ MultiAgent orchestration built with CrewAI.
 This module exposes a simple MultiAgent class that coordinates a few
 lightweight agents to analyze user input and compose a helpful reply.
 
-Environment variables used:
-- OPENAI_API_KEY or OPENROUTER_API_KEY
-- OPENAI_BASE_URL or OPENROUTER_BASE_URL (optional, for OpenRouter or custom gateways)
-- LLM_MODEL (optional; default: gpt-4o-mini)
+Environment variables used (OpenRouter-first):
+- OPENROUTER_API_KEY (preferred) or OPENAI_API_KEY (fallback)
+- OPENROUTER_BASE_URL (optional, default: https://openrouter.ai/api/v1)
+- OPENROUTER_SITE_URL (optional, for HTTP-Referer header)
+- OPENROUTER_APP_NAME (optional, for X-Title header)
+- LLM_MODEL (optional; default: openai/gpt-4o-mini)
 
 Dependencies:
-- crewai
-- langchain-openai
+- crewai (uses LiteLLM under the hood)
 """
 
 from __future__ import annotations
@@ -21,31 +22,35 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 try:
-    # Core CrewAI constructs
+    # CrewAI constructs
     from crewai import Agent, Task, Crew, Process
+    try:
+        # Newer exports
+        from crewai import LLM  # type: ignore
+    except Exception:
+        # Older path
+        from crewai.llm import LLM  # type: ignore
 except Exception as e:  # pragma: no cover - helpful error if not installed
     raise ImportError(
-        "crewai is required. Please install dependencies (e.g. `pip install crewai langchain langchain-openai`)."
-    ) from e
-
-try:
-    # LangChain OpenAI chat model wrapper
-    from langchain_openai import ChatOpenAI
-except Exception as e:  # pragma: no cover
-    raise ImportError(
-        "langchain-openai is required. Install via `pip install langchain-openai`."
+        "crewai is required. Please install dependencies (e.g. `pip install crewai litellm`)."
     ) from e
 
 
 @dataclass
 class MultiAgentConfig:
-    model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    # OpenRouter model naming (provider/model)
+    model: str = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
     temperature: float = 0.3
     max_tokens: int = 1024
-    # Support custom base URL (e.g., OpenRouter) and API keys
-    api_key: Optional[str] = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-    base_url: Optional[str] = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL")
+    # OpenRouter only (no OpenAI fallback)
+    api_key: Optional[str] = os.getenv("OPENROUTER_API_KEY")
+    base_url: Optional[str] = (
+        os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+    )
     request_timeout: int = 60
+    # Optional OpenRouter headers
+    site_url: Optional[str] = os.getenv("OPENROUTER_SITE_URL")
+    app_name: str = os.getenv("OPENROUTER_APP_NAME", "MANJU Backend")
 
 
 class MultiAgent:
@@ -62,17 +67,19 @@ class MultiAgent:
 
         if not self.config.api_key:
             raise RuntimeError(
-                "Missing API key. Set OPENAI_API_KEY or OPENROUTER_API_KEY in environment."
+                "Missing API key. Set OPENROUTER_API_KEY in environment."
             )
 
-        # Initialize LLM
-        self.llm = ChatOpenAI(
+        # Initialize CrewAI's native LLM (LiteLLM backend)
+        # Note: OpenRouter recommends setting HTTP-Referer and X-Title headers;
+        # LiteLLM handles base_url/api_key; custom headers may not be supported directly.
+        self.llm = LLM(
             model=self.config.model,
+            api_key=self.config.api_key,
+            base_url=self.config.base_url,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             timeout=self.config.request_timeout,
-            api_key=self.config.api_key,
-            base_url=self.config.base_url,
         )
 
         # Define agents
@@ -164,4 +171,13 @@ class MultiAgent:
             "response": final_text.strip(),
             "model": self.config.model,
             "used_base_url": self.config.base_url,
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return LLM orchestration status for health checks."""
+        return {
+            "engine": "crewai",
+            "model": self.config.model,
+            "base_url": self.config.base_url,
+            "ready": True,
         }
