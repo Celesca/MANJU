@@ -18,7 +18,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # FastAPI and related imports
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -26,14 +26,14 @@ import uvicorn
 
 # Import our model manager and ASR components
 try:
-    from model_manager import get_model_manager, ModelManager
+    from whisper.model_manager import get_model_manager, ModelManager
     from whisper.faster_whisper_thai import FasterWhisperThai, WhisperConfig
 except ImportError:
     # Fallback if module structure is different
     import sys
     import os
     sys.path.append(os.path.join(os.path.dirname(__file__), 'whisper'))
-    from model_manager import get_model_manager, ModelManager
+    from whisper.model_manager import get_model_manager, ModelManager
     from faster_whisper_thai import FasterWhisperThai, WhisperConfig
 
 # Configure logging
@@ -61,7 +61,7 @@ class ASRResponse(BaseModel):
 class ASRRequest(BaseModel):
     """Request model for ASR configuration"""
     language: str = "th"
-    model_id: str = "biodatlab-faster"  # Default to recommended model
+    model_id: str = "biodatlab-medium-faster"  # Default to recommended model
     use_vad: bool = True
     beam_size: int = 1
 
@@ -117,20 +117,45 @@ start_time = time.time()
 
 
 # Initialize ASR model
-def initialize_asr_model(model_id: str = "biodatlab-faster"):
-    """Initialize the Thai ASR model"""
+def initialize_asr_model(model_id: str = "biodatlab-medium-faster"):
+    """Initialize the Thai ASR model with GPU optimization"""
     global model_manager
     
     try:
-        logger.info("🚀 Initializing Model Manager...")
+        logger.info("🚀 Initializing Model Manager with GPU optimization...")
+        logger.info("🔧 GPU Configuration:")
+        logger.info("   - GPU Memory Fraction: 80%")
+        logger.info("   - Compute Type: float16 (GPU optimized)")
+        logger.info("   - Batch Size: 8 (increased for GPU efficiency)")
+        logger.info("   - Workers: 4 (parallel processing)")
+        logger.info("   - Chunk Length: 20s (optimized for GPU)")
         
         if model_manager is None:
             model_manager = get_model_manager()
         
-        logger.info(f"📦 Loading model: {model_id}")
+        logger.info(f"📦 Loading model: requested_id='{model_id}'")
         model_manager.load_model(model_id)
+        info = model_manager.get_current_model_info() or {}
+        logger.info(
+            f"📌 Loaded model resolved_id='{info.get('id','unknown')}', name='{info.get('name','')}', path='{info.get('model_path','')}'"
+        )
         
-        logger.info("✅ Thai ASR model initialized successfully!")
+        # Log GPU status
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_count = torch.cuda.device_count()
+                gpu_name = torch.cuda.get_device_name(0) if gpu_count > 0 else "Unknown"
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3) if gpu_count > 0 else 0
+                logger.info(f"🎮 GPU Status: {gpu_count} GPU(s) available")
+                logger.info(f"🎮 Primary GPU: {gpu_name} ({gpu_memory:.1f}GB)")
+                logger.info(f"💾 GPU Memory Utilization Target: 80%")
+            else:
+                logger.info("💻 No GPU available, using CPU optimization")
+        except ImportError:
+            logger.info("💻 PyTorch not available for GPU detection")
+        
+        logger.info("✅ Thai ASR model initialized successfully with GPU optimization!")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize ASR model: {e}")
@@ -141,7 +166,7 @@ def initialize_asr_model(model_id: str = "biodatlab-faster"):
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
-    logger.info("🎬 Starting Multi-agent Call Center Backend...")
+    logger.info("🎬 Starting Multi-agent Call Center ..")
     initialize_asr_model()
     
     # Create directories if they don't exist
@@ -178,10 +203,10 @@ async def health_check():
 @app.post("/api/asr", response_model=ASRResponse)
 async def transcribe_audio(
     file: UploadFile = File(..., description="Audio file to transcribe"),
-    language: str = "th",
-    model_id: str = "biodatlab-faster",
-    use_vad: bool = True,
-    beam_size: int = 1
+    language: str = Form("th"),
+    model_id: str = Form("biodatlab-medium-faster"),
+    use_vad: bool = Form(True),
+    beam_size: int = Form(1),
 ):
     """
     Transcribe audio file to Thai text using selected model
@@ -196,6 +221,7 @@ async def transcribe_audio(
     Returns:
         ASRResponse with transcription and metadata
     """
+    logger.info(f"/api/asr called with model_id='{model_id}', language='{language}', file='{file.filename}'")
     if model_manager is None or model_manager.current_model is None:
         # Try to initialize with requested model
         try:
@@ -208,14 +234,22 @@ async def transcribe_audio(
     
     # Check if we need to switch models
     current_model_info = model_manager.get_current_model_info()
-    if current_model_info and current_model_info.get("id") != model_id:
-        logger.info(f"🔄 Switching model from {current_model_info.get('id')} to {model_id}")
+    try:
+        resolved_id = model_manager.resolve_model_id(model_id)
+    except Exception:
+        resolved_id = None
+    if not resolved_id:
+        valid = ", ".join([m["id"] for m in model_manager.get_available_models()])
+        raise HTTPException(status_code=400, detail=f"Unknown model_id '{model_id}'. Valid options: {valid}")
+
+    if current_model_info and current_model_info.get("id") != resolved_id:
+        logger.info(f"🔄 Switching model from {current_model_info.get('id')} to {model_id} (resolved='{resolved_id}')")
         try:
-            model_manager.load_model(model_id)
+            model_manager.load_model(resolved_id)
         except Exception as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to load model '{model_id}': {str(e)}"
+                detail=f"Failed to load model '{model_id}' (resolved '{resolved_id}'): {str(e)}"
             )
     
     # Validate file
@@ -249,6 +283,10 @@ async def transcribe_audio(
         # Transcribe audio using model manager
         logger.info("🎵 Starting transcription...")
         result = model_manager.transcribe_with_current_model(temp_file)
+        used = model_manager.get_current_model_info() or {}
+        logger.info(
+            f"🧾 Transcribed with model_id='{used.get('id','unknown')}', name='{used.get('name','')}', path='{used.get('model_path','')}', device='{result.get('device','')}'"
+        )
         
         # Create response
         response = ASRResponse(
@@ -267,6 +305,9 @@ async def transcribe_audio(
         logger.info(f"✅ Transcription completed: {len(result['text'])} characters")
         return response
         
+    except (KeyboardInterrupt, SystemExit) as e:
+        logger.error(f"🛑 Server interrupt during transcription: {e}")
+        raise HTTPException(status_code=500, detail="Server interrupted during transcription")
     except Exception as e:
         logger.error(f"❌ Transcription failed: {e}")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
@@ -306,6 +347,7 @@ async def load_model(model_id: str):
         raise HTTPException(status_code=503, detail="Model manager not available")
     
     try:
+        logger.info(f"/api/models/{model_id}/load called")
         model_manager.load_model(model_id)
         return {
             "status": "success", 
@@ -322,10 +364,10 @@ async def load_model(model_id: str):
 @app.post("/api/asr/batch")
 async def transcribe_batch(
     files: list[UploadFile] = File(..., description="Audio files to transcribe"),
-    language: str = "th",
-    model_id: str = "biodatlab-faster",
-    use_vad: bool = True,
-    beam_size: int = 1
+    language: str = Form("th"),
+    model_id: str = Form("biodatlab-medium-faster"),
+    use_vad: bool = Form(True),
+    beam_size: int = Form(1),
 ):
     """
     Transcribe multiple audio files
@@ -351,13 +393,20 @@ async def transcribe_batch(
     
     # Check if we need to switch models
     current_model_info = model_manager.get_current_model_info()
-    if current_model_info and current_model_info.get("id") != model_id:
+    try:
+        resolved_id = model_manager.resolve_model_id(model_id)
+    except Exception:
+        resolved_id = None
+    if not resolved_id:
+        valid = ", ".join([m["id"] for m in model_manager.get_available_models()])
+        raise HTTPException(status_code=400, detail=f"Unknown model_id '{model_id}'. Valid options: {valid}")
+    if current_model_info and current_model_info.get("id") != resolved_id:
         try:
-            model_manager.load_model(model_id)
+            model_manager.load_model(resolved_id)
         except Exception as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to load model '{model_id}': {str(e)}"
+                detail=f"Failed to load model '{model_id}' (resolved '{resolved_id}'): {str(e)}"
             )
     
     if len(files) > 10:
@@ -411,7 +460,7 @@ async def get_asr_info():
 
 # Reload model endpoint (for development/debugging)
 @app.post("/api/asr/reload")
-async def reload_asr_model(model_id: str = "biodatlab-faster"):
+async def reload_asr_model(model_id: str = "biodatlab-medium-faster"):
     """Reload the ASR model (admin endpoint)"""
     try:
         logger.info(f"🔄 Reloading ASR model: {model_id}")
@@ -450,6 +499,7 @@ async def root():
         },
         "supported_models": [
             "biodatlab-faster (recommended)",
+            "biodatlab-medium-faster (recommended)", 
             "pathumma-large (recommended)", 
             "large-v3-faster",
             "large-v3-standard",

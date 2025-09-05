@@ -26,21 +26,22 @@ class AudioConfig:
 
 @dataclass
 class ProcessingConfig:
-    """Configuration for processing pipeline"""
+    """Configuration for processing pipeline with GPU optimization"""
     model_name: str = "nectec/Pathumma-whisper-th-large-v3"
     language: str = "th"
     task: str = "transcribe"
-    batch_size: int = 4
-    max_workers: int = 2
+    batch_size: int = 8  # Increased for better GPU utilization
+    max_workers: int = 4  # Increased for parallel processing
     use_gpu: bool = True
+    gpu_memory_fraction: float = 0.8  # 80% GPU memory utilization
     
     # Faster-whisper optimization options
     use_faster_whisper: bool = True  # Enable faster-whisper for 2-4x speed improvement
     faster_whisper_model: str = "large-v3"  # Model for faster-whisper (use large-v3 for Thai)
-    compute_type: str = "int8_float16"  # "int8", "int8_float16", "float16", "float32"
+    compute_type: str = "float16"  # Optimized for GPU performance
     beam_size: int = 1  # Reduced beam size for speed (1-5, lower is faster)
     use_vad: bool = True  # Voice Activity Detection for speed
-    vad_threshold: float = 0.35
+    vad_threshold: float = 0.3  # More aggressive VAD for speed
 
 
 class AudioProcessor:
@@ -118,10 +119,25 @@ class WhisperASR:
         self._load_model()
     
     def _setup_device(self) -> None:
-        """Setup device and torch dtype"""
+        """Setup device and torch dtype with GPU optimization"""
         if self.config.use_gpu and torch.cuda.is_available():
             self.device = 0 if not self.use_faster_whisper else "cuda"
-            self.torch_dtype = torch.bfloat16
+            self.torch_dtype = torch.float16  # Use float16 for better GPU performance
+            
+            # Set GPU memory fraction for 80% utilization
+            if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
+                torch.cuda.set_per_process_memory_fraction(self.config.gpu_memory_fraction)
+            
+            # Enable GPU optimizations
+            if hasattr(torch.backends.cuda, 'enable_flash_sdp'):
+                torch.backends.cuda.enable_flash_sdp(True)
+            
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.deterministic = False
+            
+            gpu_count = torch.cuda.device_count()
+            print(f"🚀 GPU acceleration enabled ({gpu_count} GPUs available)")
+            print(f"💾 GPU memory utilization set to {self.config.gpu_memory_fraction*100}%")
         else:
             self.device = -1 if not self.use_faster_whisper else "cpu"
             self.torch_dtype = torch.float32
@@ -136,8 +152,8 @@ class WhisperASR:
     def _load_faster_whisper_model(self) -> None:
         """Load faster-whisper model for 2-4x speed improvement"""
         try:
-            from backend.whisper.faster_whisper import WhisperModel
-        except ImportError:
+            from faster_whisper import WhisperModel
+        except Exception:
             print("⚠️ faster-whisper not found. Install with: pip install faster-whisper")
             print("Falling back to standard Whisper...")
             self.use_faster_whisper = False
@@ -156,8 +172,8 @@ class WhisperASR:
             self.config.faster_whisper_model,
             device=self.device,
             compute_type=compute_type,
-            cpu_threads=4 if self.device == "cpu" else 0,
-            num_workers=1,
+            cpu_threads=8 if self.device == "cpu" else 0,  # Increased CPU threads
+            num_workers=4,  # Increased workers for better GPU utilization
         )
         
         print("✅ faster-whisper model loaded successfully!")
@@ -166,22 +182,42 @@ class WhisperASR:
     def _load_standard_whisper_model(self) -> None:
         """Load standard transformers Whisper model"""
         print(f"📦 Loading standard Whisper model: {self.config.model_name}")
-        
-        self.pipe = pipeline(
-            task="automatic-speech-recognition",
-            model=self.config.model_name,
-            torch_dtype=self.torch_dtype,
-            device=self.device,
-            batch_size=self.config.batch_size,
-            framework="pt"  # Force PyTorch framework
-        )
-        
+
+        # Prefer safetensors weights; gracefully fallback to bin
+        def _build_pipe(prefer_safetensors: bool):
+            mk = {
+                "low_cpu_mem_usage": True,
+                "torch_dtype": self.torch_dtype,
+            }
+            if prefer_safetensors:
+                mk["use_safetensors"] = True
+            else:
+                # Let transformers decide / allow bin
+                mk["use_safetensors"] = None
+
+            return pipeline(
+                task="automatic-speech-recognition",
+                model=self.config.model_name,
+                device=self.device,
+                batch_size=self.config.batch_size,  # Uses optimized batch size (8)
+                framework="pt",  # Force PyTorch framework
+                model_kwargs=mk,
+                max_new_tokens=512,  # Optimize for Thai language
+                chunk_length_s=20,  # Optimized chunk length for GPU
+                stride_length_s=1,  # Reduced stride for speed
+            )
+
+        try:
+            self.pipe = _build_pipe(prefer_safetensors=True)
+        except Exception:
+            self.pipe = _build_pipe(prefer_safetensors=False)
+
         # Set language and task
         self.pipe.model.config.forced_decoder_ids = self.pipe.tokenizer.get_decoder_prompt_ids(
-            language=self.config.language, 
-            task=self.config.task
+            language=self.config.language,
+            task=self.config.task,
         )
-        
+
         print("✅ Standard Whisper model loaded successfully!")
     
     def transcribe_batch(self, audio_files: List[str]) -> List[str]:
@@ -562,3 +598,125 @@ if __name__ == "__main__":
         print("6. ✅ CUDA detected - you should see significant speedup!")
     else:
         print("6. Consider using GPU for even better performance")
+
+
+# --- Simple Transformers-based ASR adapter with process_file() interface ---
+
+class SimplePipelineASR:
+    """Lightweight ASR that uses Transformers pipeline directly and exposes process_file().
+
+    - Prefers safetensors weights for downloads.
+    - Chunks audio using AudioProcessor and batches through Transformers pipeline.
+    - Returns a dict matching model_manager expectations.
+    """
+
+    def __init__(self, audio_config: AudioConfig, processing_config: ProcessingConfig):
+        self.audio_config = audio_config
+        # Ensure we don't accidentally enable faster-whisper in this adapter
+        self.processing_config = ProcessingConfig(
+            model_name=processing_config.model_name,
+            language=processing_config.language,
+            task=processing_config.task,
+            batch_size=processing_config.batch_size,
+            max_workers=processing_config.max_workers,
+            use_gpu=processing_config.use_gpu,
+            use_faster_whisper=False,
+        )
+
+        # Device and dtype
+        if self.processing_config.use_gpu and torch.cuda.is_available():
+            self.device = 0
+            self.torch_dtype = torch.float16
+        else:
+            self.device = -1
+            self.torch_dtype = torch.float32
+
+        # Build Transformers pipeline with safetensors preference
+        def _build_pipe(prefer_safetensors: bool):
+            mk = {
+                "low_cpu_mem_usage": True,
+                "torch_dtype": self.torch_dtype,
+            }
+            if prefer_safetensors:
+                mk["use_safetensors"] = True
+            else:
+                mk["use_safetensors"] = None
+
+            return pipeline(
+                task="automatic-speech-recognition",
+                model=self.processing_config.model_name,
+                device=self.device,
+                batch_size=self.processing_config.batch_size,
+                framework="pt",
+                model_kwargs=mk,
+            )
+
+        try:
+            self.pipe = _build_pipe(prefer_safetensors=True)
+        except Exception:
+            self.pipe = _build_pipe(prefer_safetensors=False)
+
+        # Force language/task
+        self.pipe.model.config.forced_decoder_ids = self.pipe.tokenizer.get_decoder_prompt_ids(
+            language=self.processing_config.language, task=self.processing_config.task
+        )
+
+        # Audio chunker
+        self.audio_processor = AudioProcessor(self.audio_config)
+        # Expose a minimal attribute used by model_manager for device reporting
+        class _ASRInfo:
+            def __init__(self, device):
+                self.device = device
+        self.asr = _ASRInfo("cuda" if self.device == 0 else "cpu")
+
+    def process_file(self, audio_path: str) -> Dict[str, Any]:
+        """Transcribe a file and return a standardized result dict."""
+        start = time.perf_counter()
+
+        # Create chunks
+        chunk_files = self.audio_processor.preprocess_audio(audio_path)
+        if not chunk_files:
+            return {
+                "transcription": "",
+                "total_duration": 0.0,
+                "total_processing_time": 0.0,
+                "total_chunks": 0,
+            }
+
+        # Transcribe in batches
+        texts: List[str] = []
+        bs = self.processing_config.batch_size or 1
+        for i in range(0, len(chunk_files), bs):
+            batch = chunk_files[i : i + bs]
+            try:
+                out = self.pipe(batch)
+                if isinstance(out, list):
+                    texts.extend([o.get("text", "").strip() for o in out])
+                else:
+                    texts.append(out.get("text", "").strip())
+            except Exception:
+                # Fallback to single-file loop if batch failed
+                for f in batch:
+                    try:
+                        o = self.pipe(f)
+                        texts.append(o.get("text", "").strip())
+                    except Exception:
+                        texts.append("")
+
+        # Cleanup temps
+        self.audio_processor.cleanup_temp_files(chunk_files)
+
+        # Compute duration with pydub
+        try:
+            audio = AudioSegment.from_file(audio_path)
+            duration = len(audio) / 1000.0
+        except Exception:
+            duration = 0.0
+
+        elapsed = time.perf_counter() - start
+        return {
+            "transcription": " ".join([t for t in texts if t]).strip(),
+            "total_duration": duration,
+            "total_processing_time": elapsed,
+            "total_chunks": len(chunk_files),
+        }

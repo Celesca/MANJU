@@ -74,10 +74,32 @@ class ModelManager:
                 name="medium-faster",
                 display_name="Whisper Medium (Faster)",
                 model_type=ModelType.FASTER_WHISPER,
-                model_path="medium",
+                model_path="openai/whisper-medium",
                 language="th",
                 description="Medium model with faster-whisper, good balance of speed and accuracy",
                 performance_tier="fast"
+            ),
+            
+            "biodatlab-medium-faster": ModelInfo(
+                name="biodatlab-medium-faster",
+                display_name="Biodatlab Whisper Thai Medium (Faster)",
+                model_type=ModelType.FASTER_WHISPER,
+                model_path="Vinxscribe/biodatlab-whisper-th-medium-faster",
+                language="th",
+                description="Thai-optimized medium model with faster-whisper, excellent balance of speed and accuracy for Thai language",
+                performance_tier="balanced",
+                recommended=True
+            ),
+
+            "biodatlab-small-combined": ModelInfo(
+                name="biodatlab-small-combined",
+                display_name="Biodatlab Whisper Thai Small Combined",
+                model_type=ModelType.STANDARD_WHISPER,
+                model_path="biodatlab/whisper-th-small-combined",
+                language="th",
+                description="Small combined Thai model from Biodatlab, optimized for speed and resource usage. Supports safetensors format.",
+                performance_tier="fast",
+                recommended=False
             ),
             
             # Standard Whisper models (higher accuracy)
@@ -114,6 +136,49 @@ class ModelManager:
         }
         
         return models
+
+    def _normalize_id(self, s: str) -> str:
+        """Normalize user-provided model id for fuzzy matching."""
+        return "".join(ch for ch in s.lower() if ch.isalnum())
+
+    def resolve_model_id(self, requested_id: str) -> Optional[str]:
+        """Resolve user-provided model_id to a canonical key.
+
+        Supports simple aliases and fuzzy normalization (lowercase, strip non-alnum).
+        """
+        if not requested_id:
+            return None
+
+        # Exact match
+        if requested_id in self.available_models:
+            return requested_id
+
+        # Aliases
+        aliases = {
+            "biodat-small-combined": "biodatlab-small-combined",
+            "biodat_small_combined": "biodatlab-small-combined",
+            "biodatlab-small": "biodatlab-small-combined",
+            "biodatlabsmallcombined": "biodatlab-small-combined",
+            
+            # New aliases for medium faster model
+            "biodat-medium-faster": "biodatlab-medium-faster",
+            "biodat_medium_faster": "biodatlab-medium-faster",
+            "biodatlab-medium": "biodatlab-medium-faster",
+            "biodatlabmediumfaster": "biodatlab-medium-faster",
+        }
+        if requested_id in aliases:
+            return aliases[requested_id]
+
+        # Fuzzy normalization
+        norm = self._normalize_id(requested_id)
+        for key in self.available_models.keys():
+            if self._normalize_id(key) == norm:
+                return key
+        for alias_key, target in aliases.items():
+            if self._normalize_id(alias_key) == norm:
+                return target
+
+        return None
     
     def get_available_models(self) -> List[Dict[str, Any]]:
         """Get list of available models for API response"""
@@ -143,11 +208,16 @@ class ModelManager:
         Returns:
             Loaded model instance
         """
-        if model_id not in self.available_models:
-            raise ValueError(f"Unknown model ID: {model_id}")
-        
-        model_info = self.available_models[model_id]
-        logger.info(f"🔄 Loading model: {model_info.display_name}")
+        resolved_id = self.resolve_model_id(model_id)
+        if not resolved_id or resolved_id not in self.available_models:
+            valid = ", ".join(sorted(self.available_models.keys()))
+            raise ValueError(f"Unknown model ID: '{model_id}'. Valid options: {valid}")
+
+        model_info = self.available_models[resolved_id]
+        logger.info(
+            f"🔄 Loading model (requested='{model_id}', resolved='{resolved_id}'): "
+            f"{model_info.display_name} | type={model_info.model_type.value} | path={model_info.model_path}"
+        )
         
         try:
             if model_info.model_type == ModelType.FASTER_WHISPER:
@@ -158,7 +228,9 @@ class ModelManager:
             self.current_model = model
             self.current_model_info = model_info
             
-            logger.info(f"✅ Model loaded successfully: {model_info.display_name}")
+            logger.info(
+                f"✅ Model loaded successfully: id='{resolved_id}', name='{model_info.display_name}', path='{model_info.model_path}'"
+            )
             return model
             
         except Exception as e:
@@ -172,16 +244,20 @@ class ModelManager:
         except ImportError:
             from faster_whisper_thai import WhisperConfig, create_thai_asr
         
-        # Create configuration
+        # Create configuration with GPU optimization
         config = WhisperConfig(
             model_name=model_info.model_path,
             language=model_info.language,
             device="auto",
-            compute_type="int8_float16",
+            compute_type="float16",  # Optimized for GPU performance
+            gpu_memory_fraction=0.8,  # 80% GPU utilization
+            num_workers=4,  # Increased for better GPU utilization
+            cpu_threads=8,  # Optimized threading
             beam_size=1,
             use_vad=True,
-            chunk_length_ms=30000,
-            overlap_ms=1000
+            chunk_length_ms=20000,  # Optimized chunk size
+            overlap_ms=500,  # Reduced overlap for speed
+            batch_size=8  # Increased batch size for GPU efficiency
         )
         
         # Apply config overrides
@@ -195,14 +271,14 @@ class ModelManager:
     def _load_standard_whisper_model(self, model_info: ModelInfo, config_overrides: Optional[Dict] = None):
         """Load standard Whisper model"""
         try:
-            from whisper.whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
+            from whisper.whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig, SimplePipelineASR
         except ImportError:
-            from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig
+            from whisper import OverlappingASRPipeline, AudioConfig, ProcessingConfig, SimplePipelineASR
         
-        # Create configurations
+        # Create configurations with GPU optimization
         audio_config = AudioConfig(
-            chunk_length_ms=27000,
-            overlap_ms=2000,
+            chunk_length_ms=20000,  # Reduced for better parallelization
+            overlap_ms=1000,  # Optimized overlap
             min_chunk_length_ms=1000,
             sample_rate=16000,
             channels=1
@@ -212,10 +288,11 @@ class ModelManager:
             model_name=model_info.model_path,
             language=model_info.language,
             task="transcribe",
-            batch_size=4,
-            max_workers=2,
+            batch_size=8,  # Increased batch size for GPU
+            max_workers=4,  # Increased workers for better GPU utilization
             use_gpu=True,
-            use_faster_whisper=False  # Force standard whisper
+            use_faster_whisper=False,  # Force standard whisper
+            gpu_memory_fraction=0.8  # 80% GPU utilization
         )
         
         # Apply config overrides
@@ -225,8 +302,9 @@ class ModelManager:
                     setattr(processing_config, key, value)
                 elif hasattr(audio_config, key):
                     setattr(audio_config, key, value)
-        
-        return OverlappingASRPipeline(audio_config, processing_config)
+
+        # Use the lightweight Transformers pipeline adapter by default
+        return SimplePipelineASR(audio_config, processing_config)
     
     def get_current_model_info(self) -> Optional[Dict[str, Any]]:
         """Get information about currently loaded model"""

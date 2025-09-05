@@ -19,32 +19,36 @@ os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 
 @dataclass
 class WhisperConfig:
-    """Configuration for faster-whisper Thai ASR"""
+    """Configuration for faster-whisper Thai ASR with optimized GPU utilization"""
     
     # Model configuration - Using the specific Thai model from Hugging Face
     model_name: str = "Vinxscribe/biodatlab-whisper-th-large-v3-faster"  # Optimized Thai model
     language: str = "th"
     task: str = "transcribe"
     
-    # Device and compute settings
+    # Device and compute settings - Optimized for 80% GPU utilization
     device: str = "auto"  # "cuda", "cpu", or "auto"
-    compute_type: str = "int8_float16"  # "int8", "int8_float16", "float16", "float32"
+    compute_type: str = "float16"  # Changed to float16 for better GPU performance
+    gpu_memory_fraction: float = 0.8  # 80% GPU memory utilization
+    num_workers: int = 4  # Increased for better GPU utilization
+    cpu_threads: int = 8  # Optimized for multi-threading
     
-    # Audio processing
-    chunk_length_ms: int = 30000  # 30 seconds optimal for faster-whisper
-    overlap_ms: int = 1000  # Minimal overlap for speed
+    # Audio processing - Optimized for faster batch processing
+    chunk_length_ms: int = 20000  # Reduced for better parallelization
+    overlap_ms: int = 500  # Reduced overlap for speed
     sample_rate: int = 16000
     channels: int = 1
+    batch_size: int = 8  # Increased batch size for GPU efficiency
     
-    # Transcription parameters
+    # Transcription parameters - Optimized for speed
     beam_size: int = 1  # Lower for speed, higher for accuracy
     best_of: int = 1
-    patience: float = 1.0
+    patience: float = 0.8  # Reduced for faster processing
     temperature: float = 0.0
     
     # VAD (Voice Activity Detection) settings
     use_vad: bool = True
-    vad_threshold: float = 0.35
+    vad_threshold: float = 0.3  # Slightly more aggressive for speed
     
     # Quality thresholds
     no_speech_threshold: float = 0.6
@@ -62,13 +66,28 @@ class FasterWhisperThai:
         self._load_model()
     
     def _setup_device(self):
-        """Setup computing device"""
+        """Setup computing device with optimized GPU utilization"""
         if self.config.device == "auto":
             try:
                 import torch
                 if torch.cuda.is_available():
                     self.device = "cuda"
-                    print("🚀 Using CUDA GPU acceleration")
+                    # Set GPU memory fraction for 80% utilization
+                    if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
+                        torch.cuda.set_per_process_memory_fraction(self.config.gpu_memory_fraction)
+                    
+                    # Set GPU device count for multi-GPU systems
+                    gpu_count = torch.cuda.device_count()
+                    print(f"🚀 Using CUDA GPU acceleration ({gpu_count} GPUs available)")
+                    print(f"💾 GPU memory utilization set to {self.config.gpu_memory_fraction*100}%")
+                    
+                    # Enable optimized attention for better GPU performance
+                    if hasattr(torch.backends.cuda, 'enable_flash_sdp'):
+                        torch.backends.cuda.enable_flash_sdp(True)
+                    
+                    # Set CUDA optimizations
+                    torch.backends.cudnn.benchmark = True
+                    torch.backends.cudnn.deterministic = False
                 else:
                     self.device = "cpu"
                     print("💻 Using CPU (consider GPU for better performance)")
@@ -78,13 +97,19 @@ class FasterWhisperThai:
         else:
             self.device = self.config.device
         
-        # Adjust compute type for CPU
-        if self.device == "cpu" and self.config.compute_type in ["int8_float16", "float16"]:
-            self.config.compute_type = "int8"
-            print("⚠️ Adjusted compute_type to 'int8' for CPU compatibility")
+        # Optimize compute type for device
+        if self.device == "cpu":
+            if self.config.compute_type in ["float16", "int8_float16"]:
+                self.config.compute_type = "int8"
+                print("⚠️ Adjusted compute_type to 'int8' for CPU compatibility")
+        else:
+            # For GPU, use float16 for optimal performance
+            if self.config.compute_type == "int8_float16":
+                self.config.compute_type = "float16"
+                print("🚀 Using float16 for optimal GPU performance")
     
     def _load_model(self):
-        """Load the faster-whisper model"""
+        """Load the faster-whisper model with safetensors support"""
         try:
             from faster_whisper import WhisperModel
         except ImportError:
@@ -97,23 +122,25 @@ class FasterWhisperThai:
         print(f"   Compute type: {self.config.compute_type}")
         
         try:
-            # For Hugging Face models, we can pass the model name directly
-            # faster-whisper will automatically download from Hugging Face
-            self.model = WhisperModel(
-                self.config.model_name,
-                device=self.device,
-                compute_type=self.config.compute_type,
-                cpu_threads=4 if self.device == "cpu" else 0,
-                num_workers=1,
-                download_root=None,  # Use default cache
-                local_files_only=False  # Allow downloading from Hugging Face
-            )
+            # Try to load model with safetensors support
+            self.model = self._load_model_with_safetensors_support()
             print("✅ Thai faster-whisper model loaded successfully!")
             print(f"💡 Using optimized Thai model: {self.config.model_name}")
             print("🚀 Expected better performance for Thai language")
             
         except Exception as e:
             print(f"❌ Error loading model: {e}")
+            
+            # Check if it's a safetensors compatibility issue
+            if "model.bin" in str(e) or "safetensors" in str(e).lower():
+                print("🔄 Detected safetensors compatibility issue, trying alternative approach...")
+                try:
+                    self.model = self._load_model_alternative_approach()
+                    print("✅ Model loaded with alternative approach!")
+                    return
+                except Exception as alt_error:
+                    print(f"❌ Alternative approach failed: {alt_error}")
+            
             print("🔄 Trying fallback to standard large-v3 model...")
             
             # Fallback to standard model if the specific Thai model fails
@@ -122,8 +149,8 @@ class FasterWhisperThai:
                     "large-v3",
                     device=self.device,
                     compute_type=self.config.compute_type,
-                    cpu_threads=4 if self.device == "cpu" else 0,
-                    num_workers=1,
+                    cpu_threads=self.config.cpu_threads if self.device == "cpu" else 0,
+                    num_workers=self.config.num_workers,
                     download_root=None,
                     local_files_only=False
                 )
@@ -134,6 +161,110 @@ class FasterWhisperThai:
                 print(f"❌ Fallback also failed: {fallback_error}")
                 raise
     
+    def _load_model_with_safetensors_support(self):
+        """Load model with native safetensors support - no conversion needed"""
+        from faster_whisper import WhisperModel
+        import os
+        
+        try:
+            # Try loading with native safetensors support and GPU optimization
+            # Modern faster-whisper versions can read safetensors directly
+            return WhisperModel(
+                self.config.model_name,
+                device=self.device,
+                compute_type=self.config.compute_type,
+                cpu_threads=self.config.cpu_threads if self.device == "cpu" else 0,
+                num_workers=self.config.num_workers,
+                download_root=None,
+                local_files_only=False
+            )
+        except Exception as e:
+            print(f"❌ Direct loading failed: {e}")
+            
+            # If direct loading fails, try loading from local cache with safetensors
+            cache_dir = self._get_model_cache_directory()
+            if cache_dir and os.path.exists(cache_dir):
+                print(f"🔄 Trying to load from local cache with safetensors: {cache_dir}")
+                
+                # Check what files exist
+                model_safetensors = os.path.join(cache_dir, "model.safetensors")
+                model_bin = os.path.join(cache_dir, "model.bin")
+                
+                print(f"📁 Files in cache:")
+                print(f"   model.safetensors: {os.path.exists(model_safetensors)}")
+                print(f"   model.bin: {os.path.exists(model_bin)}")
+                
+                # Try loading from cache directory directly
+                return WhisperModel(
+                    cache_dir,
+                    device=self.device,
+                    compute_type=self.config.compute_type,
+                    cpu_threads=self.config.cpu_threads if self.device == "cpu" else 0,
+                    num_workers=self.config.num_workers,
+                    local_files_only=True
+                )
+            
+            raise e
+    
+    def _get_model_cache_directory(self):
+        """Get the Hugging Face cache directory for the model"""
+        import os
+        from pathlib import Path
+        
+        # Standard HuggingFace cache location
+        hf_cache = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        hub_cache = os.path.join(hf_cache, "hub")
+        
+        # Convert model name to cache directory format
+        model_name_safe = self.config.model_name.replace("/", "--")
+        model_dir_pattern = f"models--{model_name_safe}"
+        
+        # Find the model directory
+        if os.path.exists(hub_cache):
+            for item in os.listdir(hub_cache):
+                if item.startswith(model_dir_pattern):
+                    model_path = os.path.join(hub_cache, item)
+                    # Look for snapshots directory
+                    snapshots_dir = os.path.join(model_path, "snapshots")
+                    if os.path.exists(snapshots_dir):
+                        # Get the latest snapshot
+                        snapshots = os.listdir(snapshots_dir)
+                        if snapshots:
+                            latest_snapshot = sorted(snapshots)[-1]
+                            return os.path.join(snapshots_dir, latest_snapshot)
+        
+        return None
+    
+    def _load_model_alternative_approach(self):
+        """Alternative approach for loading models with safetensors"""
+        from faster_whisper import WhisperModel
+        
+        # Try different model sizes/versions that might be more compatible
+        alternative_models = [
+            "openai/whisper-small",
+            "openai/whisper-medium", 
+            "openai/whisper-base"
+        ]
+        
+        for alt_model in alternative_models:
+            try:
+                print(f"🔄 Trying alternative model: {alt_model}")
+                model = WhisperModel(
+                    alt_model,
+                    device=self.device,
+                    compute_type=self.config.compute_type,
+                    cpu_threads=4 if self.device == "cpu" else 0,
+                    num_workers=1,
+                    local_files_only=False
+                )
+                print(f"✅ Successfully loaded alternative model: {alt_model}")
+                return model
+            except Exception as e:
+                print(f"❌ Alternative model {alt_model} failed: {e}")
+                continue
+        
+        raise Exception("All alternative models failed to load")
+
     def _preprocess_audio(self, audio_path: str) -> str:
         """
         Preprocess audio file to optimal format for faster-whisper
