@@ -36,6 +36,12 @@ except ImportError:
     from whisper.model_manager import get_model_manager, ModelManager
     from faster_whisper_thai import FasterWhisperThai, WhisperConfig
 
+# Multi-agent LLM orchestration
+try:
+    from MultiAgent import MultiAgent
+except Exception:
+    MultiAgent = None  # Will validate on first use
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -93,6 +99,21 @@ class HealthResponse(BaseModel):
     version: str = "1.0.0"
 
 
+class LLMRequest(BaseModel):
+    """Request model for /llm endpoint"""
+    text: str
+    history: Optional[List[Dict[str, Any]]] = None  # [{role, content}]
+
+
+class LLMResponse(BaseModel):
+    """Response model for /llm endpoint"""
+    response: str
+    model: Optional[str] = None
+    used_base_url: Optional[str] = None
+    timestamp: str
+    status: str = "success"
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Multi-agent Call Center Backend",
@@ -114,6 +135,7 @@ app.add_middleware(
 # Global variables
 model_manager: Optional[ModelManager] = None
 start_time = time.time()
+multi_agent: Optional[Any] = None
 
 
 # Initialize ASR model
@@ -175,6 +197,15 @@ async def startup_event():
     
     logger.info("🎉 Backend server started successfully!")
 
+    # Lazy init MultiAgent so server can start even if CrewAI isn't installed
+    global multi_agent
+    if MultiAgent is not None:
+        try:
+            multi_agent = MultiAgent()
+            logger.info("🧠 MultiAgent orchestrator initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ MultiAgent init skipped: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -197,6 +228,41 @@ async def health_check():
         asr_model_loaded=model_manager is not None and model_manager.current_model is not None,
         device=current_model.get("device", "unknown") if current_model else "unknown"
     )
+
+
+# LLM multi-agent endpoint
+@app.post("/llm", response_model=LLMResponse)
+async def llm_generate(req: LLMRequest):
+    """Generate a multi-agent LLM response for a given text input."""
+    global multi_agent
+    if not req.text or not req.text.strip():
+        raise HTTPException(status_code=400, detail="'text' is required")
+
+    # Ensure orchestrator exists (lazy init)
+    if multi_agent is None:
+        if MultiAgent is None:
+            raise HTTPException(
+                status_code=503,
+                detail="MultiAgent unavailable. Install crewai and langchain-openai, then restart server.",
+            )
+        try:
+            multi_agent = MultiAgent()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Failed initializing MultiAgent: {e}")
+
+    try:
+        logger.info("/llm called; generating response via MultiAgent")
+        result = multi_agent.run(req.text, conversation_history=req.history)
+        return LLMResponse(
+            response=result.get("response", ""),
+            model=result.get("model"),
+            used_base_url=result.get("used_base_url"),
+            timestamp=datetime.now().isoformat(),
+            status="success",
+        )
+    except Exception as e:
+        logger.error(f"❌ LLM generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM generation failed: {str(e)}")
 
 
 # Main ASR endpoint
@@ -495,7 +561,8 @@ async def root():
             "asr_info": "/api/asr/info",
             "models": "/api/models",
             "load_model": "/api/models/{model_id}/load",
-            "reload": "/api/asr/reload"
+            "reload": "/api/asr/reload",
+            "llm": "/llm"
         },
         "supported_models": [
             "biodatlab-faster (recommended)",

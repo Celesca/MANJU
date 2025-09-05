@@ -56,3 +56,8 @@ ffmpeg-python>=0.2.0
 
 soundfile>=0.12.1
 scipy>=1.10.0
+
+# Multi-agent LLM orchestration
+crewai>=0.51.0
+langchain>=0.2.0
+langchain-openai>=0.1.7
