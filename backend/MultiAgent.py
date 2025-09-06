@@ -31,8 +31,9 @@ try:
         from crewai import LLM  # Newer versions
     except Exception:
         from crewai.llm import LLM  # Older path
+    from crewai_tools import RagTool
 except Exception as e:  # pragma: no cover
-    raise ImportError("crewai is required. Install with: pip install crewai litellm") from e
+    raise ImportError("crewai and crewai_tools are required. Install with: pip install crewai crewai_tools litellm") from e
 
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ class MultiAgentConfig:
                 self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
                 # Update model for OpenRouter if using default - keep provider prefix for LiteLLM
                 if self.model == "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo":
-                    self.model = "openrouter/qwen/qwen-2.5-72b-instruct"  # Full provider prefix
+                    self.model = "openrouter/qwen/qwen3-4b:free"  # Full provider prefix
         
         if not self.api_key:
             self.api_key = os.getenv("TOGETHER_API_KEY")
@@ -192,6 +193,17 @@ class MultiAgent:
                 "Ensure crewai & litellm are up to date and that TOGETHER_API_KEY is valid."
             ) from e
 
+        # Initialize RAG tool for document retrieval
+        documents_path = os.path.join(os.path.dirname(__file__), "documents")
+        pdf_path = os.path.join(documents_path, "aithailand.pdf")
+        
+        # Create RAG tool for the PDF document
+        self.rag_tool = RagTool(
+            path=pdf_path,
+            description="Tool to search and retrieve information from the AI Thailand Hackathon 2024 document. "
+                       "Use this to find information about the hackathon, teams, winners, prizes, and event details."
+        )
+
         # Define agents
         self.intent_analyst = Agent(
             role="Thai Intent Analyst",
@@ -208,14 +220,33 @@ class MultiAgent:
             verbose=False,
         )
 
+        self.rag_agent = Agent(
+            role="Document Knowledge Specialist",
+            goal=(
+                "ค้นหาและดึงข้อมูลที่เกี่ยวข้องจากเอกสาร AI Thailand Hackathon 2024 "
+                "เพื่อให้ข้อมูลที่ถูกต้องและครบถ้วนเกี่ยวกับการแข่งขัน ทีม รางวัล และรายละเอียดต่างๆ"
+            ),
+            backstory=(
+                "คุณเป็นผู้เชี่ยวชาญในการค้นหาและวิเคราะห์เอกสาร "
+                "มีความรู้เฉพาะเจาะจงเกี่ยวกับงาน AI Thailand Hackathon 2024 "
+                "สามารถดึงข้อมูลที่แม่นยำและเกี่ยวข้องได้"
+            ),
+            tools=[self.rag_tool],
+            llm=self.llm,
+            allow_delegation=False,
+            verbose=False,
+        )
+
         self.response_composer = Agent(
             role="Thai Response Composer",
             goal=(
-                "จัดทำคำตอบภาษาไทยที่สุภาพ ชัดเจน และนำไปใช้ได้จริง ตามนโยบายทั่วไปของฝ่ายบริการลูกค้า"
+                "จัดทำคำตอบภาษาไทยที่สุภาพ ชัดเจน และนำไปใช้ได้จริง ตามนโยบายทั่วไปของฝ่ายบริการลูกค้า "
+                "โดยใช้ข้อมูลจากเอกสารอ้างอิงเมื่อเหมาะสม"
             ),
             backstory=(
                 "คุณเป็นผู้เชี่ยวชาญการสื่อสารเชิงบริการลูกค้า "
-                "ให้ข้อมูลและแนวทางแก้ไขอย่างเป็นขั้นตอน พร้อมสรุปสั้นท้ายข้อความ"
+                "ให้ข้อมูลและแนวทางแก้ไขอย่างเป็นขั้นตอน พร้อมสรุปสั้นท้ายข้อความ "
+                "และสามารถอ้างอิงข้อมูลจากเอกสารได้อย่างแม่นยำ"
             ),
             llm=self.llm,
             allow_delegation=False,
@@ -236,34 +267,57 @@ class MultiAgent:
         analyze_task = Task(
             description=(
                 "วิเคราะห์ข้อความของผู้ใช้และระบุ: เจตนา, ประเด็นหลัก, คำสำคัญ, "
-                "ข้อมูลที่ขาดหาย, และความเร่งด่วน (ถ้ามี).\n\n"
+                "ข้อมูลที่ขาดหาย, และความเร่งด่วน (ถ้ามี). "
+                "หากคำถามเกี่ยวข้องกับ AI Thailand Hackathon 2024 ให้ระบุด้วย\n\n"
                 f"ข้อความผู้ใช้: '''{user_text}'''\n\n"
                 + (f"ประวัติสนทนาล่าสุด:\n{history_text}\n\n" if history_text else "")
                 + "ให้ผลลัพธ์เป็น bullet list ภาษาไทย"
             ),
             agent=self.intent_analyst,
             expected_output=(
-                "Bullet list สั้นๆ ที่สรุปเจตนา ประเด็น คีย์เวิร์ด ข้อมูลที่ขาด และความเร่งด่วน"
+                "Bullet list สั้นๆ ที่สรุปเจตนา ประเด็น คีย์เวิร์ด ข้อมูลที่ขาด และความเร่งด่วน "
+                "รวมถึงการระบุว่าต้องการข้อมูลจากเอกสาร AI Thailand Hackathon หรือไม่"
             ),
+        )
+
+        rag_task = Task(
+            description=(
+                "หากการวิเคราะห์เจตนาระบุว่าต้องการข้อมูลเกี่ยวกับ AI Thailand Hackathon 2024, "
+                "ให้ค้นหาและดึงข้อมูลที่เกี่ยวข้องจากเอกสาร เช่น:\n"
+                "- รายละเอียดการแข่งขัน\n"
+                "- ทีมที่ชนะรางวัล\n"
+                "- รางวัลและเงินรางวัล\n"
+                "- วันที่และสถานที่จัดงาน\n"
+                "- API และเทคโนโลยีที่ใช้\n"
+                "- คณะกรรมการ\n"
+                "หากไม่เกี่ยวข้อง ให้ตอบว่า 'ไม่ต้องการข้อมูลจากเอกสาร'"
+            ),
+            agent=self.rag_agent,
+            expected_output=(
+                "ข้อมูลที่เกี่ยวข้องจากเอกสาร AI Thailand Hackathon 2024 "
+                "หรือข้อความ 'ไม่ต้องการข้อมูลจากเอกสาร' หากไม่เกี่ยวข้อง"
+            ),
+            context=[analyze_task],
         )
 
         compose_task = Task(
             description=(
-                "จากผลการวิเคราะห์ สร้างคำตอบภาษาไทยที่:\n"
+                "จากผลการวิเคราะห์และข้อมูลจากเอกสาร (หากมี) สร้างคำตอบภาษาไทยที่:\n"
                 "- สุภาพ ชัดเจน เหมาะสมกับลูกค้าไทย\n"
                 "- ให้ทางเลือกหรือขั้นตอนถัดไปที่ทำได้ทันที\n"
                 "- ถ้ามีข้อจำกัด ให้แจ้งอย่างโปร่งใส\n"
+                "- หากมีข้อมูลจากเอกสาร ให้อ้างอิงและใช้ข้อมูลนั้นในการตอบ\n"
                 "- ลงท้ายด้วยสรุป 1 บรรทัด\n"
                 "ระยะยาวไม่เกิน 8-12 บรรทัด\n"
             ),
             agent=self.response_composer,
-            expected_output="คำตอบสุดท้ายภาษาไทยที่พร้อมส่งให้ลูกค้า",
-            context=[analyze_task],
+            expected_output="คำตอบสุดท้ายภาษาไทยที่พร้อมส่งให้ลูกค้า พร้อมการอ้างอิงข้อมูลจากเอกสาร (หากเกี่ยวข้อง)",
+            context=[analyze_task, rag_task],
         )
 
         return Crew(
-            agents=[self.intent_analyst, self.response_composer],
-            tasks=[analyze_task, compose_task],
+            agents=[self.intent_analyst, self.rag_agent, self.response_composer],
+            tasks=[analyze_task, rag_task, compose_task],
             process=Process.sequential,
             verbose=False,
         )
