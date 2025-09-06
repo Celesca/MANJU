@@ -107,6 +107,14 @@ class MultiAgent:
         self.config = (config or MultiAgentConfig()).resolve()
         if not self.config.api_key:
             raise RuntimeError("Missing OPENROUTER_API_KEY (no OpenAI fallback). Set %env OPENROUTER_API_KEY=... before use.")
+
+        # CrewAI / LiteLLM may still look for OPENAI_* vars internally. Provide mapping.
+        if 'OPENAI_API_KEY' not in os.environ:
+            os.environ['OPENAI_API_KEY'] = self.config.api_key
+        if self.config.base_url and 'OPENAI_API_BASE' not in os.environ:
+            # Some libs use OPENAI_API_BASE; litellm honors base_url parameter but we map anyway.
+            os.environ['OPENAI_API_BASE'] = self.config.base_url
+
         logger.info(
             "MultiAgent init | model=%s | base_url=%s | key_prefix=%s",
             self.config.model,
@@ -115,14 +123,20 @@ class MultiAgent:
         )
 
     # Initialize CrewAI's native LLM (LiteLLM backend)
-        self.llm = LLM(
-            model=self.config.model,
-            api_key=self.config.api_key,
-            base_url=self.config.base_url,
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            timeout=self.config.request_timeout,
-        )
+        try:
+            self.llm = LLM(
+                model=self.config.model,
+                api_key=self.config.api_key,
+                base_url=self.config.base_url,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                timeout=self.config.request_timeout,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed initializing LLM. Model={self.config.model} base_url={self.config.base_url} msg={e}. "
+                "Ensure crewai & litellm are up to date and that OPENROUTER_API_KEY is valid."
+            ) from e
 
         # Define agents
         self.intent_analyst = Agent(
@@ -209,6 +223,11 @@ class MultiAgent:
         self.config.refresh()
         if not self.config.api_key:
             raise RuntimeError("OPENROUTER_API_KEY missing at runtime. Set it via %env OPENROUTER_API_KEY=... before calling run().")
+        # Keep OPENAI_* sync for each run (in case key changed)
+        if os.environ.get('OPENAI_API_KEY') != self.config.api_key:
+            os.environ['OPENAI_API_KEY'] = self.config.api_key
+        if self.config.base_url and os.environ.get('OPENAI_API_BASE') != self.config.base_url:
+            os.environ['OPENAI_API_BASE'] = self.config.base_url
         crew = self._build_crew(text, conversation_history)
         output = crew.kickoff()
         # CrewAI returns a result object or str depending on version; coerce to str
