@@ -36,6 +36,14 @@ except ImportError:
     from whisper.model_manager import get_model_manager, ModelManager
     from faster_whisper_thai import FasterWhisperThai, WhisperConfig
 
+# Multi-agent LLM orchestration
+multi_agent_import_error: Optional[str] = None
+try:
+    from MultiAgent import MultiAgent
+except Exception as e:
+    MultiAgent = None  # Will validate on first use
+    multi_agent_import_error = str(e)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -91,6 +99,24 @@ class HealthResponse(BaseModel):
     asr_model_loaded: bool
     device: str
     version: str = "1.0.0"
+    llm_ready: Optional[bool] = None
+    llm_model: Optional[str] = None
+    llm_engine: Optional[str] = None
+
+
+class LLMRequest(BaseModel):
+    """Request model for /llm endpoint"""
+    text: str
+    history: Optional[List[Dict[str, Any]]] = None  # [{role, content}]
+
+
+class LLMResponse(BaseModel):
+    """Response model for /llm endpoint"""
+    response: str
+    model: Optional[str] = None
+    used_base_url: Optional[str] = None
+    timestamp: str
+    status: str = "success"
 
 
 # Initialize FastAPI app
@@ -114,6 +140,7 @@ app.add_middleware(
 # Global variables
 model_manager: Optional[ModelManager] = None
 start_time = time.time()
+multi_agent: Optional[Any] = None
 
 
 # Initialize ASR model
@@ -167,6 +194,8 @@ def initialize_asr_model(model_id: str = "biodatlab-medium-faster"):
 async def startup_event():
     """Initialize services on startup"""
     logger.info("🎬 Starting Multi-agent Call Center ..")
+    logger.info(f"🧪 Python executable: {sys.executable}")
+    logger.info(f"🧪 OPENROUTER_API_KEY set: {bool(os.getenv('OPENROUTER_API_KEY'))}")
     initialize_asr_model()
     
     # Create directories if they don't exist
@@ -174,6 +203,18 @@ async def startup_event():
     os.makedirs("temp", exist_ok=True)
     
     logger.info("🎉 Backend server started successfully!")
+
+    # Lazy init MultiAgent so server can start even if CrewAI isn't installed
+    global multi_agent
+    if MultiAgent is not None:
+        try:
+            multi_agent = MultiAgent()
+            logger.info("🧠 MultiAgent orchestrator initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ MultiAgent init skipped: {e}")
+    else:
+        if multi_agent_import_error:
+            logger.warning(f"⚠️ MultiAgent import failed: {multi_agent_import_error}")
 
 
 @app.on_event("shutdown")
@@ -190,13 +231,98 @@ async def health_check():
     
     current_model = model_manager.get_current_model_info() if model_manager else None
     
+    # LLM health (auto-init to ensure readiness reflected on health)
+    llm_ready = False
+    llm_model = None
+    llm_engine = None
+    global multi_agent
+    if multi_agent is None and MultiAgent is not None:
+        try:
+            multi_agent = MultiAgent()
+        except Exception as e:
+            logger.warning(f"⚠️ LLM init during /health failed: {e}")
+    if multi_agent is not None:
+        try:
+            st = multi_agent.get_status()
+            llm_ready = bool(st.get("ready", False))
+            llm_model = st.get("model")
+            llm_engine = st.get("engine")
+        except Exception:
+            llm_ready = False
+
     return HealthResponse(
         status="healthy" if model_manager and model_manager.current_model else "degraded",
         timestamp=datetime.now().isoformat(),
         uptime=uptime,
         asr_model_loaded=model_manager is not None and model_manager.current_model is not None,
-        device=current_model.get("device", "unknown") if current_model else "unknown"
+        device=current_model.get("device", "unknown") if current_model else "unknown",
+        llm_ready=llm_ready,
+        llm_model=llm_model,
+        llm_engine=llm_engine,
     )
+
+
+@app.get("/llm/health")
+async def llm_health():
+    """Dedicated LLM health endpoint; ensures LLM is initialized and reports status."""
+    global multi_agent
+    if multi_agent is None:
+        if MultiAgent is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"MultiAgent unavailable. Install crewai and litellm. Cause: {multi_agent_import_error}",
+            )
+        try:
+            multi_agent = MultiAgent()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Failed initializing MultiAgent: {e}")
+
+    try:
+        st = multi_agent.get_status()
+        return {
+            "status": "ready" if st.get("ready") else "not_ready",
+            "engine": st.get("engine"),
+            "model": st.get("model"),
+            "base_url": st.get("base_url"),
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve LLM status: {e}")
+
+
+# LLM multi-agent endpoint
+@app.post("/llm", response_model=LLMResponse)
+async def llm_generate(req: LLMRequest):
+    """Generate a multi-agent LLM response for a given text input."""
+    global multi_agent
+    if not req.text or not req.text.strip():
+        raise HTTPException(status_code=400, detail="'text' is required")
+
+    # Ensure orchestrator exists (lazy init)
+    if multi_agent is None:
+        if MultiAgent is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"MultiAgent unavailable. Install crewai and litellm, then restart server. Cause: {multi_agent_import_error}",
+            )
+        try:
+            multi_agent = MultiAgent()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Failed initializing MultiAgent: {e}")
+
+    try:
+        logger.info("/llm called; generating response via MultiAgent")
+        result = multi_agent.run(req.text, conversation_history=req.history)
+        return LLMResponse(
+            response=result.get("response", ""),
+            model=result.get("model"),
+            used_base_url=result.get("used_base_url"),
+            timestamp=datetime.now().isoformat(),
+            status="success",
+        )
+    except Exception as e:
+        logger.error(f"❌ LLM generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM generation failed: {str(e)}")
 
 
 # Main ASR endpoint
@@ -495,7 +621,9 @@ async def root():
             "asr_info": "/api/asr/info",
             "models": "/api/models",
             "load_model": "/api/models/{model_id}/load",
-            "reload": "/api/asr/reload"
+            "reload": "/api/asr/reload",
+            "llm": "/llm",
+            "llm_health": "/llm/health"
         },
         "supported_models": [
             "biodatlab-faster (recommended)",

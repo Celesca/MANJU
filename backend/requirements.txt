@@ -56,3 +56,7 @@ ffmpeg-python>=0.2.0
 
 soundfile>=0.12.1
 scipy>=1.10.0
+
+# Multi-agent LLM orchestration (OpenRouter via LiteLLM)
+crewai 
+crewai[tools]
