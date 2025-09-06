@@ -1,56 +1,97 @@
-"""
-MultiAgent orchestration built with CrewAI.
+"""MultiAgent orchestration built with CrewAI (LiteLLM backend).
 
-This module exposes a simple MultiAgent class that coordinates a few
-lightweight agents to analyze user input and compose a helpful reply.
+Provides a tiny two-agent pipeline (intent analysis + response composition)
+for Thai call-center style responses.
 
-Environment variables used (OpenRouter-first):
-- OPENROUTER_API_KEY (preferred) or OPENAI_API_KEY (fallback)
-- OPENROUTER_BASE_URL (optional, default: https://openrouter.ai/api/v1)
-- OPENROUTER_SITE_URL (optional, for HTTP-Referer header)
-- OPENROUTER_APP_NAME (optional, for X-Title header)
-- LLM_MODEL (optional; default: openai/gpt-4o-mini)
+Environment variables (evaluated at runtime):
+    OPENROUTER_API_KEY (required) or OPENAI_API_KEY (fallback)
+    OPENROUTER_BASE_URL (default: https://openrouter.ai/api/v1)
+    LLM_MODEL (default: openai/gpt-4o-mini)
+    OPENROUTER_SITE_URL (optional) -> HTTP-Referer header (not always supported)
+    OPENROUTER_APP_NAME (optional) -> X-Title header (not always supported)
 
-Dependencies:
-- crewai (uses LiteLLM under the hood)
+Usage:
+    from MultiAgent import MultiAgent
+    ma = MultiAgent()
+    result = ma.run("สวัสดีครับ")
+    print(result["response"])
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import logging
 from typing import Any, Dict, List, Optional
 
 try:
-    # CrewAI constructs
     from crewai import Agent, Task, Crew, Process
     try:
-        # Newer exports
-        from crewai import LLM  # type: ignore
+        from crewai import LLM  # Newer versions
     except Exception:
-        # Older path
-        from crewai.llm import LLM  # type: ignore
-except Exception as e:  # pragma: no cover - helpful error if not installed
-    raise ImportError(
-        "crewai is required. Please install dependencies (e.g. `pip install crewai litellm`)."
-    ) from e
+        from crewai.llm import LLM  # Older path
+except Exception as e:  # pragma: no cover
+    raise ImportError("crewai is required. Install with: pip install crewai litellm") from e
+
+
+logger = logging.getLogger(__name__)
+
+
+def _late_env_hydrate():
+    """Attempt late .env loading by traversing parent directories until found."""
+    if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"):
+        return
+    tried: List[str] = []
+    current = os.path.dirname(__file__)
+    for _ in range(6):  # traverse up to 6 levels
+        env_path = os.path.join(current, '.env')
+        tried.append(env_path)
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        s = line.strip()
+                        if not s or s.startswith('#') or '=' not in s:
+                            continue
+                        k, v = s.split('=', 1)
+                        k = k.strip(); v = v.strip().strip('"').strip("'")
+                        if k and v and k not in os.environ:
+                            os.environ[k] = v
+                if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"):
+                    logger.debug(f"Loaded .env from {env_path}")
+                    return
+            except Exception:
+                pass
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    logger.debug(f"Env key not found; searched: {tried}")
 
 
 @dataclass
 class MultiAgentConfig:
-    # OpenRouter model naming (provider/model)
-    model: str = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
+    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-4o-mini"))
     temperature: float = 0.3
     max_tokens: int = 1024
-    # OpenRouter only (no OpenAI fallback)
-    api_key: Optional[str] = os.getenv("OPENROUTER_API_KEY")
-    base_url: Optional[str] = (
-        os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-    )
+    api_key: Optional[str] = None  # resolved later
+    base_url: Optional[str] = field(default_factory=lambda: os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1")
     request_timeout: int = 60
-    # Optional OpenRouter headers
-    site_url: Optional[str] = os.getenv("OPENROUTER_SITE_URL")
-    app_name: str = os.getenv("OPENROUTER_APP_NAME", "MANJU Backend")
+    site_url: Optional[str] = field(default_factory=lambda: os.getenv("OPENROUTER_SITE_URL"))
+    app_name: str = field(default_factory=lambda: os.getenv("OPENROUTER_APP_NAME", "MANJU Backend"))
+
+    def resolve(self):
+        if not self.api_key:
+            self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            _late_env_hydrate()
+            self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+        return self
+
+    def refresh(self):
+        """Re-read environment (useful in dynamic notebooks like Colab after setting %env)."""
+        self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or self.api_key
+        return self
 
 
 class MultiAgent:
@@ -63,16 +104,17 @@ class MultiAgent:
     """
 
     def __init__(self, config: Optional[MultiAgentConfig] = None) -> None:
-        self.config = config or MultiAgentConfig()
-
+        self.config = (config or MultiAgentConfig()).resolve()
         if not self.config.api_key:
-            raise RuntimeError(
-                "Missing API key. Set OPENROUTER_API_KEY in environment."
-            )
+            raise RuntimeError("Missing API key. Ensure OPENROUTER_API_KEY is set before server start.")
+        logger.info(
+            "MultiAgent init | model=%s | base_url=%s | key_prefix=%s",
+            self.config.model,
+            self.config.base_url,
+            self.config.api_key[:8] + "…",
+        )
 
-        # Initialize CrewAI's native LLM (LiteLLM backend)
-        # Note: OpenRouter recommends setting HTTP-Referer and X-Title headers;
-        # LiteLLM handles base_url/api_key; custom headers may not be supported directly.
+    # Initialize CrewAI's native LLM (LiteLLM backend)
         self.llm = LLM(
             model=self.config.model,
             api_key=self.config.api_key,
@@ -163,6 +205,10 @@ class MultiAgent:
 
         Returns a dict with keys: response, model, used_base_url
         """
+        # Refresh key in case user set %env after object creation (e.g., in Colab)
+        self.config.refresh()
+        if not self.config.api_key:
+            raise RuntimeError("OPENROUTER_API_KEY missing at runtime. Set it via %env OPENROUTER_API_KEY=... before calling run().")
         crew = self._build_crew(text, conversation_history)
         output = crew.kickoff()
         # CrewAI returns a result object or str depending on version; coerce to str
