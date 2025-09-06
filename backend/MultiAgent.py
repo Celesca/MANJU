@@ -42,31 +42,43 @@ def _late_env_hydrate():
     """Attempt late .env loading by traversing parent directories until found."""
     if os.getenv("TOGETHER_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
         return
+    
     tried: List[str] = []
     current = os.path.dirname(__file__)
-    for _ in range(6):  # traverse up to 6 levels
-        env_path = os.path.join(current, '.env')
-        tried.append(env_path)
-        if os.path.exists(env_path):
-            try:
-                with open(env_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        s = line.strip()
-                        if not s or s.startswith('#') or '=' not in s:
-                            continue
-                        k, v = s.split('=', 1)
-                        k = k.strip(); v = v.strip().strip('"').strip("'")
-                        if k and v and k not in os.environ:
-                            os.environ[k] = v
-                if os.getenv("TOGETHER_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
-                    logger.debug(f"Loaded .env from {env_path}")
-                    return
-            except Exception:
-                pass
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
+    
+    # Also check the parent directory (root of project)
+    search_paths = [
+        current,  # backend directory
+        os.path.dirname(current),  # parent directory (project root)
+    ]
+    
+    for base_path in search_paths:
+        for _ in range(6):  # traverse up to 6 levels
+            env_path = os.path.join(base_path, '.env')
+            tried.append(env_path)
+            if os.path.exists(env_path):
+                try:
+                    logger.debug(f"Found .env file at: {env_path}")
+                    with open(env_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            s = line.strip()
+                            if not s or s.startswith('#') or '=' not in s:
+                                continue
+                            k, v = s.split('=', 1)
+                            k = k.strip(); v = v.strip().strip('"').strip("'")
+                            if k and v and k not in os.environ:
+                                os.environ[k] = v
+                                logger.debug(f"Loaded env var: {k}")
+                    if os.getenv("TOGETHER_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
+                        logger.debug(f"Successfully loaded API key from {env_path}")
+                        return
+                except Exception as e:
+                    logger.debug(f"Error reading {env_path}: {e}")
+            parent = os.path.dirname(base_path)
+            if parent == base_path:
+                break
+            base_path = parent
+    
     logger.debug(f"Env key not found; searched: {tried}")
 
 
@@ -80,16 +92,51 @@ class MultiAgentConfig:
     request_timeout: int = 60
 
     def resolve(self):
+        # Try OpenRouter first, then Together AI
+        if not self.api_key:
+            self.api_key = os.getenv("OPENROUTER_API_KEY")
+            if self.api_key:
+                # Update base URL for OpenRouter
+                self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+                # Update model for OpenRouter if using default - keep provider prefix for LiteLLM
+                if self.model == "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo":
+                    self.model = "openrouter/qwen/qwen-2.5-72b-instruct"  # Full provider prefix
+        
         if not self.api_key:
             self.api_key = os.getenv("TOGETHER_API_KEY")
+            if self.api_key:
+                self.base_url = os.getenv("TOGETHER_BASE_URL") or "https://api.together.xyz/v1"
+                # Keep original model for Together AI (already has together_ai/ prefix)
+        
         if not self.api_key:
             _late_env_hydrate()
-            self.api_key = os.getenv("TOGETHER_API_KEY")
+            # Try again after loading .env
+            self.api_key = os.getenv("OPENROUTER_API_KEY")
+            if self.api_key:
+                self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+                if self.model == "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo":
+                    self.model = "openrouter/qwen/qwen-2.5-72b-instruct"
+            else:
+                self.api_key = os.getenv("TOGETHER_API_KEY")
+                if self.api_key:
+                    self.base_url = os.getenv("TOGETHER_BASE_URL") or "https://api.together.xyz/v1"
+        
         return self
 
     def refresh(self):
         """Re-read environment (useful in dynamic notebooks like Colab after setting %env)."""
-        self.api_key = os.getenv("TOGETHER_API_KEY") or self.api_key
+        old_key = self.api_key
+        self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("TOGETHER_API_KEY") or self.api_key
+        
+        # Update base URL if API key source changed
+        if self.api_key != old_key:
+            if os.getenv("OPENROUTER_API_KEY"):
+                self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+                if self.model == "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo":
+                    self.model = "openrouter/qwen/qwen-2.5-72b-instruct"
+            elif os.getenv("TOGETHER_API_KEY"):
+                self.base_url = os.getenv("TOGETHER_BASE_URL") or "https://api.together.xyz/v1"
+        
         return self
 
 
@@ -103,12 +150,19 @@ class MultiAgent:
     """
 
     def __init__(self, config: Optional[MultiAgentConfig] = None) -> None:
+        # Ensure .env is loaded before anything else
+        _late_env_hydrate()
+        
         self.config = (config or MultiAgentConfig()).resolve()
         if not self.config.api_key:
-            raise RuntimeError("Missing TOGETHER_API_KEY. Set %env TOGETHER_API_KEY=... before use.")
+            raise RuntimeError("Missing TOGETHER_API_KEY or OPENROUTER_API_KEY. Set one of them before use.")
 
+        # Determine which provider we're using
+        self.provider = "openrouter" if "openrouter.ai" in self.config.base_url else "together"
+        
         logger.info(
-            "MultiAgent init | model=%s | base_url=%s | key_prefix=%s",
+            "MultiAgent init | provider=%s | model=%s | base_url=%s | key_prefix=%s",
+            self.provider,
             self.config.model,
             self.config.base_url,
             self.config.api_key[:8] + "…",
@@ -117,9 +171,13 @@ class MultiAgent:
         # Initialize CrewAI's native LLM (LiteLLM backend) - exactly like the working notebook
         # Ensure the API key is set in environment for LiteLLM
         if self.config.api_key:
-            os.environ["TOGETHER_API_KEY"] = self.config.api_key
+            if self.provider == "openrouter":
+                os.environ["OPENROUTER_API_KEY"] = self.config.api_key
+            else:
+                os.environ["TOGETHER_API_KEY"] = self.config.api_key
         
         try:
+            # Configure LLM - the model name already includes the provider prefix for LiteLLM
             self.llm = LLM(
                 model=self.config.model,
                 api_key=self.config.api_key,
@@ -218,10 +276,13 @@ class MultiAgent:
         # Refresh key in case user set %env after object creation (e.g., in Colab)
         self.config.refresh()
         if not self.config.api_key:
-            raise RuntimeError("TOGETHER_API_KEY missing at runtime. Set it via %env TOGETHER_API_KEY=... before calling run().")
+            raise RuntimeError("API key missing at runtime. Set TOGETHER_API_KEY or OPENROUTER_API_KEY before calling run().")
         
         # Ensure the environment variable is updated for LiteLLM
-        os.environ["TOGETHER_API_KEY"] = self.config.api_key
+        if self.provider == "openrouter":
+            os.environ["OPENROUTER_API_KEY"] = self.config.api_key
+        else:
+            os.environ["TOGETHER_API_KEY"] = self.config.api_key
         
         crew = self._build_crew(text, conversation_history)
         output = crew.kickoff()
