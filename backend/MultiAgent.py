@@ -77,8 +77,6 @@ class MultiAgentConfig:
     api_key: Optional[str] = None  # resolved later
     base_url: Optional[str] = field(default_factory=lambda: os.getenv("TOGETHER_BASE_URL") or "https://api.together.xyz/v1")
     request_timeout: int = 60
-    site_url: Optional[str] = field(default_factory=lambda: os.getenv("TOGETHER_SITE_URL"))
-    app_name: str = field(default_factory=lambda: os.getenv("TOGETHER_APP_NAME", "MANJU Backend"))
 
     def resolve(self):
         if not self.api_key:
@@ -106,14 +104,7 @@ class MultiAgent:
     def __init__(self, config: Optional[MultiAgentConfig] = None) -> None:
         self.config = (config or MultiAgentConfig()).resolve()
         if not self.config.api_key:
-            raise RuntimeError("Missing TOGETHER_API_KEY (no OpenAI fallback). Set %env TOGETHER_API_KEY=... before use.")
-
-        # CrewAI / LiteLLM may still look for OPENAI_* vars internally. Provide mapping.
-        if 'OPENAI_API_KEY' not in os.environ:
-            os.environ['OPENAI_API_KEY'] = self.config.api_key
-        if self.config.base_url and 'OPENAI_API_BASE' not in os.environ:
-            # Some libs use OPENAI_API_BASE; litellm honors base_url parameter but we map anyway.
-            os.environ['OPENAI_API_BASE'] = self.config.base_url
+            raise RuntimeError("Missing TOGETHER_API_KEY. Set %env TOGETHER_API_KEY=... before use.")
 
         logger.info(
             "MultiAgent init | model=%s | base_url=%s | key_prefix=%s",
@@ -122,7 +113,7 @@ class MultiAgent:
             self.config.api_key[:8] + "…",
         )
 
-    # Initialize CrewAI's native LLM (LiteLLM backend)
+        # Initialize CrewAI's native LLM (LiteLLM backend) - exactly like the working notebook
         try:
             self.llm = LLM(
                 model=self.config.model,
@@ -223,11 +214,7 @@ class MultiAgent:
         self.config.refresh()
         if not self.config.api_key:
             raise RuntimeError("TOGETHER_API_KEY missing at runtime. Set it via %env TOGETHER_API_KEY=... before calling run().")
-        # Keep OPENAI_* sync for each run (in case key changed)
-        if os.environ.get('OPENAI_API_KEY') != self.config.api_key:
-            os.environ['OPENAI_API_KEY'] = self.config.api_key
-        if self.config.base_url and os.environ.get('OPENAI_API_BASE') != self.config.base_url:
-            os.environ['OPENAI_API_BASE'] = self.config.base_url
+        
         crew = self._build_crew(text, conversation_history)
         output = crew.kickoff()
         # CrewAI returns a result object or str depending on version; coerce to str
