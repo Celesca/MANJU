@@ -4,9 +4,9 @@ Provides a tiny two-agent pipeline (intent analysis + response composition)
 for Thai call-center style responses.
 
 Environment variables (evaluated at runtime):
-    OPENROUTER_API_KEY (required) or OPENAI_API_KEY (fallback)
+    OPENROUTER_API_KEY (required)
     OPENROUTER_BASE_URL (default: https://openrouter.ai/api/v1)
-    LLM_MODEL (default: openai/gpt-4o-mini)
+    LLM_MODEL (default: deepseek/deepseek-chat)  # choose any OpenRouter-supported model
     OPENROUTER_SITE_URL (optional) -> HTTP-Referer header (not always supported)
     OPENROUTER_APP_NAME (optional) -> X-Title header (not always supported)
 
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 def _late_env_hydrate():
     """Attempt late .env loading by traversing parent directories until found."""
-    if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"):
+    if os.getenv("OPENROUTER_API_KEY"):
         return
     tried: List[str] = []
     current = os.path.dirname(__file__)
@@ -71,7 +71,7 @@ def _late_env_hydrate():
 
 @dataclass
 class MultiAgentConfig:
-    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "openai/gpt-4o-mini"))
+    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "deepseek/deepseek-chat"))
     temperature: float = 0.3
     max_tokens: int = 1024
     api_key: Optional[str] = None  # resolved later
@@ -82,15 +82,15 @@ class MultiAgentConfig:
 
     def resolve(self):
         if not self.api_key:
-            self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+            self.api_key = os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
             _late_env_hydrate()
-            self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+            self.api_key = os.getenv("OPENROUTER_API_KEY")
         return self
 
     def refresh(self):
         """Re-read environment (useful in dynamic notebooks like Colab after setting %env)."""
-        self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or self.api_key
+        self.api_key = os.getenv("OPENROUTER_API_KEY") or self.api_key
         return self
 
 
@@ -106,7 +106,7 @@ class MultiAgent:
     def __init__(self, config: Optional[MultiAgentConfig] = None) -> None:
         self.config = (config or MultiAgentConfig()).resolve()
         if not self.config.api_key:
-            raise RuntimeError("Missing API key. Ensure OPENROUTER_API_KEY is set before server start.")
+            raise RuntimeError("Missing OPENROUTER_API_KEY (no OpenAI fallback). Set %env OPENROUTER_API_KEY=... before use.")
         logger.info(
             "MultiAgent init | model=%s | base_url=%s | key_prefix=%s",
             self.config.model,
