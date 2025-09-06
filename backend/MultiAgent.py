@@ -4,11 +4,12 @@ Provides a tiny two-agent pipeline (intent analysis + response composition)
 for Thai call-center style responses.
 
 Environment variables (evaluated at runtime):
-    TOGETHER_API_KEY (required)
-    TOGETHER_BASE_URL (default: https://api.together.xyz/v1)
+    TOGETHER_API_KEY or OPENROUTER_API_KEY (required)
+    TOGETHER_BASE_URL or OPENROUTER_BASE_URL (default: auto-detected)
     LLM_MODEL (default: together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo)
-    TOGETHER_SITE_URL (optional) -> HTTP-Referer header (not always supported)
-    TOGETHER_APP_NAME (optional) -> X-Title header (not always supported)
+    
+Note: Will automatically use OpenRouter if OPENROUTER_API_KEY is found,
+      or Together AI if TOGETHER_API_KEY is found.
 
 Usage:
     from MultiAgent import MultiAgent
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 def _late_env_hydrate():
     """Attempt late .env loading by traversing parent directories until found."""
-    if os.getenv("TOGETHER_API_KEY"):
+    if os.getenv("TOGETHER_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
         return
     tried: List[str] = []
     current = os.path.dirname(__file__)
@@ -57,7 +58,7 @@ def _late_env_hydrate():
                         k = k.strip(); v = v.strip().strip('"').strip("'")
                         if k and v and k not in os.environ:
                             os.environ[k] = v
-                if os.getenv("TOGETHER_API_KEY") or os.getenv("OPENAI_API_KEY"):
+                if os.getenv("TOGETHER_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
                     logger.debug(f"Loaded .env from {env_path}")
                     return
             except Exception:
@@ -114,6 +115,10 @@ class MultiAgent:
         )
 
         # Initialize CrewAI's native LLM (LiteLLM backend) - exactly like the working notebook
+        # Ensure the API key is set in environment for LiteLLM
+        if self.config.api_key:
+            os.environ["TOGETHER_API_KEY"] = self.config.api_key
+        
         try:
             self.llm = LLM(
                 model=self.config.model,
@@ -214,6 +219,9 @@ class MultiAgent:
         self.config.refresh()
         if not self.config.api_key:
             raise RuntimeError("TOGETHER_API_KEY missing at runtime. Set it via %env TOGETHER_API_KEY=... before calling run().")
+        
+        # Ensure the environment variable is updated for LiteLLM
+        os.environ["TOGETHER_API_KEY"] = self.config.api_key
         
         crew = self._build_crew(text, conversation_history)
         output = crew.kickoff()
