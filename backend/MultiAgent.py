@@ -4,11 +4,11 @@ Provides a tiny two-agent pipeline (intent analysis + response composition)
 for Thai call-center style responses.
 
 Environment variables (evaluated at runtime):
-    OPENROUTER_API_KEY (required)
-    OPENROUTER_BASE_URL (default: https://openrouter.ai/api/v1)
-    LLM_MODEL (default: deepseek/deepseek-chat)  # choose any OpenRouter-supported model
-    OPENROUTER_SITE_URL (optional) -> HTTP-Referer header (not always supported)
-    OPENROUTER_APP_NAME (optional) -> X-Title header (not always supported)
+    TOGETHER_API_KEY (required)
+    TOGETHER_BASE_URL (default: https://api.together.xyz/v1)
+    LLM_MODEL (default: together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo)
+    TOGETHER_SITE_URL (optional) -> HTTP-Referer header (not always supported)
+    TOGETHER_APP_NAME (optional) -> X-Title header (not always supported)
 
 Usage:
     from MultiAgent import MultiAgent
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 def _late_env_hydrate():
     """Attempt late .env loading by traversing parent directories until found."""
-    if os.getenv("OPENROUTER_API_KEY"):
+    if os.getenv("TOGETHER_API_KEY"):
         return
     tried: List[str] = []
     current = os.path.dirname(__file__)
@@ -57,7 +57,7 @@ def _late_env_hydrate():
                         k = k.strip(); v = v.strip().strip('"').strip("'")
                         if k and v and k not in os.environ:
                             os.environ[k] = v
-                if os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"):
+                if os.getenv("TOGETHER_API_KEY") or os.getenv("OPENAI_API_KEY"):
                     logger.debug(f"Loaded .env from {env_path}")
                     return
             except Exception:
@@ -71,26 +71,26 @@ def _late_env_hydrate():
 
 @dataclass
 class MultiAgentConfig:
-    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "deepseek/deepseek-chat"))
+    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo"))
     temperature: float = 0.3
     max_tokens: int = 1024
     api_key: Optional[str] = None  # resolved later
-    base_url: Optional[str] = field(default_factory=lambda: os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1")
+    base_url: Optional[str] = field(default_factory=lambda: os.getenv("TOGETHER_BASE_URL") or "https://api.together.xyz/v1")
     request_timeout: int = 60
-    site_url: Optional[str] = field(default_factory=lambda: os.getenv("OPENROUTER_SITE_URL"))
-    app_name: str = field(default_factory=lambda: os.getenv("OPENROUTER_APP_NAME", "MANJU Backend"))
+    site_url: Optional[str] = field(default_factory=lambda: os.getenv("TOGETHER_SITE_URL"))
+    app_name: str = field(default_factory=lambda: os.getenv("TOGETHER_APP_NAME", "MANJU Backend"))
 
     def resolve(self):
         if not self.api_key:
-            self.api_key = os.getenv("OPENROUTER_API_KEY")
+            self.api_key = os.getenv("TOGETHER_API_KEY")
         if not self.api_key:
             _late_env_hydrate()
-            self.api_key = os.getenv("OPENROUTER_API_KEY")
+            self.api_key = os.getenv("TOGETHER_API_KEY")
         return self
 
     def refresh(self):
         """Re-read environment (useful in dynamic notebooks like Colab after setting %env)."""
-        self.api_key = os.getenv("OPENROUTER_API_KEY") or self.api_key
+        self.api_key = os.getenv("TOGETHER_API_KEY") or self.api_key
         return self
 
 
@@ -106,7 +106,7 @@ class MultiAgent:
     def __init__(self, config: Optional[MultiAgentConfig] = None) -> None:
         self.config = (config or MultiAgentConfig()).resolve()
         if not self.config.api_key:
-            raise RuntimeError("Missing OPENROUTER_API_KEY (no OpenAI fallback). Set %env OPENROUTER_API_KEY=... before use.")
+            raise RuntimeError("Missing TOGETHER_API_KEY (no OpenAI fallback). Set %env TOGETHER_API_KEY=... before use.")
 
         # CrewAI / LiteLLM may still look for OPENAI_* vars internally. Provide mapping.
         if 'OPENAI_API_KEY' not in os.environ:
@@ -135,7 +135,7 @@ class MultiAgent:
         except Exception as e:
             raise RuntimeError(
                 f"Failed initializing LLM. Model={self.config.model} base_url={self.config.base_url} msg={e}. "
-                "Ensure crewai & litellm are up to date and that OPENROUTER_API_KEY is valid."
+                "Ensure crewai & litellm are up to date and that TOGETHER_API_KEY is valid."
             ) from e
 
         # Define agents
@@ -222,7 +222,7 @@ class MultiAgent:
         # Refresh key in case user set %env after object creation (e.g., in Colab)
         self.config.refresh()
         if not self.config.api_key:
-            raise RuntimeError("OPENROUTER_API_KEY missing at runtime. Set it via %env OPENROUTER_API_KEY=... before calling run().")
+            raise RuntimeError("TOGETHER_API_KEY missing at runtime. Set it via %env TOGETHER_API_KEY=... before calling run().")
         # Keep OPENAI_* sync for each run (in case key changed)
         if os.environ.get('OPENAI_API_KEY') != self.config.api_key:
             os.environ['OPENAI_API_KEY'] = self.config.api_key
