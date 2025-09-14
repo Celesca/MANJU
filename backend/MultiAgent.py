@@ -25,15 +25,6 @@ from dataclasses import dataclass, field
 import logging
 from typing import Any, Dict, List, Optional
 
-# Optional local transformers fallback (bitsandbytes)
-_HAS_TRANSFORMERS = False
-try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-    import torch
-    _HAS_TRANSFORMERS = True
-except Exception:
-    _HAS_TRANSFORMERS = False
-
 try:
     from crewai import Agent, Task, Crew, Process
     try:
@@ -45,6 +36,9 @@ except Exception as e:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+
+TOGETHER_MODEL = "together_ai/google/gemma-3n-E4B-it"
+OPENROUTER_MODEL = "openrouter/qwen/qwen3-4b:free"
 
 
 def _late_env_hydrate():
@@ -93,7 +87,7 @@ def _late_env_hydrate():
 
 @dataclass
 class MultiAgentConfig:
-    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo"))
+    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", TOGETHER_MODEL))
     temperature: float = 0.3
     max_tokens: int = 1024
     api_key: Optional[str] = None  # resolved later
@@ -108,8 +102,8 @@ class MultiAgentConfig:
                 # Update base URL for OpenRouter
                 self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
                 # Update model for OpenRouter if using default - keep provider prefix for LiteLLM
-                if self.model == "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo":
-                    self.model = "openrouter/qwen/qwen3-4b:free"  # Full provider prefix
+                if self.model == TOGETHER_MODEL:
+                    self.model = OPENROUTER_MODEL  # Full provider prefix
         
         if not self.api_key:
             self.api_key = os.getenv("TOGETHER_API_KEY")
@@ -123,8 +117,8 @@ class MultiAgentConfig:
             self.api_key = os.getenv("OPENROUTER_API_KEY")
             if self.api_key:
                 self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-                if self.model == "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo":
-                    self.model = "openrouter/qwen/qwen3-4b:free"
+                if self.model == TOGETHER_MODEL:
+                    self.model = OPENROUTER_MODEL
             else:
                 self.api_key = os.getenv("TOGETHER_API_KEY")
                 if self.api_key:
@@ -141,8 +135,8 @@ class MultiAgentConfig:
         if self.api_key != old_key:
             if os.getenv("OPENROUTER_API_KEY"):
                 self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-                if self.model == "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo":
-                    self.model = "openrouter/qwen/qwen3-4b:free"
+                if self.model == TOGETHER_MODEL:
+                    self.model = OPENROUTER_MODEL
             elif os.getenv("TOGETHER_API_KEY"):
                 self.base_url = os.getenv("TOGETHER_BASE_URL") or "https://api.together.xyz/v1"
         
@@ -163,90 +157,11 @@ class MultiAgent:
         _late_env_hydrate()
         
         self.config = (config or MultiAgentConfig()).resolve()
+        if not self.config.api_key:
+            raise RuntimeError("Missing TOGETHER_API_KEY or OPENROUTER_API_KEY. Set one of them before use.")
 
-        # If no remote provider key is present, optionally fallback to a local model
-        local_model_path = os.getenv("LLM_FALLBACK_LOCAL_PATH")
-        local_device = os.getenv("LLM_FALLBACK_DEVICE", "cuda")
-
-        if not self.config.api_key and local_model_path:
-            # Attempt local transformers+bitsandbytes fallback
-            if not _HAS_TRANSFORMERS:
-                raise RuntimeError(
-                    "No provider API key found and local transformers/bitsandbytes are not installed.\n"
-                    "Install transformers, accelerate, and bitsandbytes to use local fallback, or set OPENROUTER_API_KEY/TOGETHER_API_KEY."
-                )
-
-            # Local adapter class
-            class LocalTransformersLLMAdapter:
-                def __init__(self, model_path: str, device: str = "cuda"):
-                    # Use 4-bit quantization settings (nf4)
-                    bnb_conf = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=torch.float16,
-                        bnb_4bit_use_double_quant=True,
-                        bnb_4bit_quant_type="nf4",
-                    )
-                    self.tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
-                    # device_map='auto' will place model on available GPUs
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        model_path,
-                        device_map="auto" if device.startswith("cuda") else None,
-                        quantization_config=bnb_conf if device.startswith("cuda") else None,
-                        torch_dtype=torch.float16 if device.startswith("cuda") else None,
-                    )
-
-                    # pick device for generation
-                    try:
-                        self.device = next(self.model.parameters()).device
-                    except Exception:
-                        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-                def generate(self, prompt: str, max_new_tokens: int = 256, temperature: float = 0.3) -> str:
-                    inputs = self.tokenizer(prompt, return_tensors="pt")
-                    input_ids = inputs.input_ids.to(self.device)
-                    with torch.no_grad():
-                        out_ids = self.model.generate(
-                            input_ids,
-                            max_new_tokens=max_new_tokens,
-                            do_sample=False,
-                            temperature=temperature,
-                            pad_token_id=self.tokenizer.eos_token_id,
-                        )
-                    return self.tokenizer.decode(out_ids[0], skip_special_tokens=True)
-
-            # instantiate adapter and set as self.llm-like object
-            try:
-                logger.info(f"No provider API key found — loading local LLM from {local_model_path} on device={local_device}")
-                local_adapter = LocalTransformersLLMAdapter(local_model_path, device=local_device)
-                # Wrap adapter in a tiny shim to mimic crewai.LLM minimal interface used by agents
-                class _Shim:
-                    def __init__(self, adapter):
-                        self.adapter = adapter
-
-                    def generate(self, *args, **kwargs):
-                        return self.adapter.generate(*args, **kwargs)
-
-                    # Provide a compatibility name property
-                    @property
-                    def model_name(self):
-                        return os.path.basename(local_model_path)
-
-                self.llm = _Shim(local_adapter)
-                # Mark provider as 'local'
-                self.provider = "local"
-                self.config.api_key = None
-                logger.info("Local LLM loaded and will be used by MultiAgent")
-            except Exception as e:
-                logger.exception("Failed loading local LLM fallback: %s", e)
-                raise RuntimeError(f"Local fallback failed: {e}") from e
-
-        else:
-            if not self.config.api_key:
-                raise RuntimeError("Missing TOGETHER_API_KEY or OPENROUTER_API_KEY. Set one of them before use, or set LLM_FALLBACK_LOCAL_PATH to use a local model.")
-
-        # Determine which provider we're using (if not local)
-        if not getattr(self, 'provider', None):
-            self.provider = "openrouter" if "openrouter.ai" in self.config.base_url else "together"
+        # Determine which provider we're using
+        self.provider = "openrouter" if "openrouter.ai" in self.config.base_url else "together"
         
         logger.info(
             "MultiAgent init | provider=%s | model=%s | base_url=%s | key_prefix=%s",
