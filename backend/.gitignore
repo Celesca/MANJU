@@ -1,3 +1,4 @@
 .env
 vector_db
 models/
+__pycache__
