@@ -154,17 +154,30 @@ class MultiAgent:
         
         self.config = (config or MultiAgentConfig()).resolve()
         if not self.config.api_key:
-            raise RuntimeError("Missing TOGETHER_API_KEY or OPENROUTER_API_KEY. Set one of them before use.")
+            # Provide a clearer, actionable error message rather than a bare KeyError
+            raise RuntimeError(
+                "Missing API key for LLM provider.\n"
+                "Set one of the following environment variables before creating MultiAgent:\n"
+                "  - OPENROUTER_API_KEY   (for OpenRouter)\n"
+                "  - TOGETHER_API_KEY     (for Together AI)\n\n"
+                "Examples:\n"
+                "  On Windows (cmd.exe): setx OPENROUTER_API_KEY \"your_key_here\"\n"
+                "  On Unix/macOS: export OPENROUTER_API_KEY=\"your_key_here\"\n\n"
+                "If you expect a .env file to provide the key, ensure it's located in the project root or backend/.env;"
+                " MultiAgent will attempt to load a .env file automatically."
+            )
 
         # Determine which provider we're using
         self.provider = "openrouter" if "openrouter.ai" in self.config.base_url else "together"
         
+        # Log initialization without leaking full keys
+        key_preview = (self.config.api_key[:8] + "…") if self.config.api_key else "<no-key>"
         logger.info(
-            "MultiAgent init | provider=%s | model=%s | base_url=%s | key_prefix=%s",
+            "MultiAgent init | provider=%s | model=%s | base_url=%s | key_preview=%s",
             self.provider,
             self.config.model,
             self.config.base_url,
-            self.config.api_key[:8] + "…",
+            key_preview,
         )
 
         # Initialize CrewAI's native LLM (LiteLLM backend) - exactly like the working notebook
@@ -185,10 +198,31 @@ class MultiAgent:
                 max_tokens=self.config.max_tokens,
                 timeout=self.config.request_timeout,
             )
+        except KeyError as ke:
+            # Some upstream libs raise KeyError when expecting OPENAI_API_KEY; catch and reword
+            msg = str(ke)
+            if 'OPENAI_API_KEY' in msg or 'openai' in msg.lower():
+                raise RuntimeError(
+                    "LLM initialization failed because an OpenAI API key appears to be required but isn't set.\n"
+                    "If you intended to use OpenAI, set the environment variable OPENAI_API_KEY.\n"
+                    "If you intended to use OpenRouter or Together AI, ensure your model name includes the provider prefix"
+                    " (for example 'openrouter/...' or 'together_ai/...') and that OPENROUTER_API_KEY or TOGETHER_API_KEY is set.\n"
+                    "Also check that crewai and litellm versions are compatible with provider-prefixed model names."
+                ) from ke
+            raise
         except Exception as e:
+            # Inspect message for common misconfiguration hints
+            emsg = str(e).lower()
+            extra_hint = ""
+            if 'openai' in emsg or 'openai_api_key' in emsg or 'openai_api' in emsg:
+                extra_hint = (
+                    " Hint: an OpenAI key may be required by the chosen model or upstream library.\n"
+                    "Set OPENAI_API_KEY if you intend to use OpenAI, or pick a provider-prefixed model name like 'openrouter/...' or 'together_ai/...'."
+                )
             raise RuntimeError(
-                f"Failed initializing LLM. Model={self.config.model} base_url={self.config.base_url} msg={e}. "
-                "Ensure crewai & litellm are up to date and that TOGETHER_API_KEY is valid."
+                f"Failed initializing LLM. Model={self.config.model} base_url={self.config.base_url} msg={e}.\n"
+                "Ensure crewai & litellm are up to date and that the correct provider API key is set (OPENROUTER_API_KEY or TOGETHER_API_KEY)."
+                + extra_hint
             ) from e
 
         # Initialize RAG tool for document retrieval
