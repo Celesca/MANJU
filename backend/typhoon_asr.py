@@ -127,18 +127,18 @@ class TyphoonASR:
         return result
 
 
-if __name__ == '__main__':
-    # small CLI for quick local testing
-    import argparse
+# if __name__ == '__main__':
+#     # small CLI for quick local testing
+#     import argparse
 
-    parser = argparse.ArgumentParser(description='Typhoon ASR CLI')
-    parser.add_argument('input', help='Path to input audio file (wav)')
-    parser.add_argument('--device', default='cpu', help='Device to run model on (cpu or cuda)')
-    args = parser.parse_args()
+#     parser = argparse.ArgumentParser(description='Typhoon ASR CLI')
+#     parser.add_argument('input', help='Path to input audio file (wav)')
+#     parser.add_argument('--device', default='cpu', help='Device to run model on (cpu or cuda)')
+#     args = parser.parse_args()
 
-    asr = TyphoonASR()
-    out = asr.transcribe_file(args.input, device=args.device)
-    print('Transcription:')
-    print(out['text'])
-    print('\nPerformance:')
-    print(f"processing_time={out['processing_time']:.2f}s audio_duration={out['audio_duration']:.2f}s rtf={out['rtf']:.2f}")
+#     asr = TyphoonASR()
+#     out = asr.transcribe_file(args.input)
+#     print('Transcription:')
+#     print(out['text'])
+#     print('\nPerformance:')
+#     print(f"processing_time={out['processing_time']:.2f}s audio_duration={out['audio_duration']:.2f}s rtf={out['rtf']:.2f}")
