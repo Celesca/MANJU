@@ -23,8 +23,6 @@ import os
 from dataclasses import dataclass, field
 import logging
 from typing import Any, Dict, List, Optional
-from composio import Composio
-from composio_crewai import CrewAIProvider
 
 try:
     from crewai import Agent, Task, Crew, Process
@@ -38,10 +36,6 @@ except Exception as e:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
-
-composio = Composio(provider=CrewAIProvider())
-# Get All the tools
-tools = composio.tools.get(user_id="default", toolkits=["GITHUB"])
 
 def _late_env_hydrate():
     """Attempt late .env loading by traversing parent directories until found."""
