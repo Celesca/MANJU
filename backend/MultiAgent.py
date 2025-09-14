@@ -84,7 +84,7 @@ def _late_env_hydrate():
 
 @dataclass
 class MultiAgentConfig:
-    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo"))
+    model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo"))
     temperature: float = 0.3
     max_tokens: int = 1024
     api_key: Optional[str] = None  # resolved later
@@ -99,8 +99,8 @@ class MultiAgentConfig:
                 # Update base URL for OpenRouter
                 self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
                 # Update model for OpenRouter if using default - keep provider prefix for LiteLLM
-                if self.model == "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo":
-                    self.model = "openrouter/qwen/qwen-2.5-72b-instruct"  # Full provider prefix
+                if self.model == "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo":
+                    self.model = "openrouter/qwen/qwen3-4b:free"  # Full provider prefix
         
         if not self.api_key:
             self.api_key = os.getenv("TOGETHER_API_KEY")
@@ -114,8 +114,8 @@ class MultiAgentConfig:
             self.api_key = os.getenv("OPENROUTER_API_KEY")
             if self.api_key:
                 self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-                if self.model == "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo":
-                    self.model = "openrouter/qwen/qwen-2.5-72b-instruct"
+                if self.model == "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo":
+                    self.model = "openrouter/qwen/qwen3-4b:free"
             else:
                 self.api_key = os.getenv("TOGETHER_API_KEY")
                 if self.api_key:
@@ -132,8 +132,8 @@ class MultiAgentConfig:
         if self.api_key != old_key:
             if os.getenv("OPENROUTER_API_KEY"):
                 self.base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-                if self.model == "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo":
-                    self.model = "openrouter/qwen/qwen-2.5-72b-instruct"
+                if self.model == "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo":
+                    self.model = "openrouter/qwen/qwen3-4b:free"
             elif os.getenv("TOGETHER_API_KEY"):
                 self.base_url = os.getenv("TOGETHER_BASE_URL") or "https://api.together.xyz/v1"
         
