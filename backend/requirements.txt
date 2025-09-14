@@ -63,4 +63,4 @@ crewai[tools]
 
 librosa 
 soundfile
-nemo_toolkit['asr']
+nemo_toolkit[asr]
