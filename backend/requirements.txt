@@ -60,3 +60,7 @@ scipy>=1.10.0
 # Multi-agent LLM orchestration (OpenRouter via LiteLLM)
 crewai 
 crewai[tools]
+
+librosa 
+soundfile
+nemo_toolkit['asr']
