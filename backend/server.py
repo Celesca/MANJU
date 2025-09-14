@@ -139,6 +139,14 @@ async def startup_event():
         try:
             typhoon_asr = TyphoonASR()
             logger.info("TyphoonASR instance created; model will be lazy-loaded on first use")
+            # Preload TyphoonASR at startup on CPU (hard-coded)
+            try:
+                device = "cpu"
+                logger.info("Preloading TyphoonASR model on device='cpu' (this may take a while)")
+                typhoon_asr.load_model(device=device)
+                logger.info("TyphoonASR model preloaded successfully on CPU")
+            except Exception as e:
+                logger.warning(f"TyphoonASR preload failed on CPU: {e}")
         except Exception as e:
             typhoon_asr = None
             logger.warning(f"Failed to create TyphoonASR instance: {e}")
