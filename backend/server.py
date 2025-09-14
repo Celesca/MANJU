@@ -39,20 +39,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Pydantic models for API
-class ASRResponse(BaseModel):
-    """Response model for ASR API"""
-    text: str
-    language: str
-    duration: float
-    processing_time: float
-    speed_ratio: float
-    chunks_processed: int
-    model: str
-    device: str
-    timestamp: str
-    status: str = "success"
-
 class ASRRequest(BaseModel):
     """Request model for ASR configuration"""
     language: str = "th"
@@ -295,7 +281,7 @@ async def llm_generate(req: LLMRequest):
 
 
 # Main ASR endpoint
-@app.post("/api/asr", response_model=ASRResponse)
+@app.post("/api/asr")
 async def transcribe_audio(
     file: UploadFile = File(..., description="Audio file to transcribe"),
 ):
@@ -348,20 +334,7 @@ async def transcribe_audio(
         logger.info("🎵 Starting transcription with TyphoonASR...")
         result = typhoon_asr.transcribe_file(temp_file)
 
-        response = ASRResponse(
-            text=result.get('text', ''),
-            duration=result.get('audio_duration', 0.0),
-            processing_time=result.get('processing_time', 0.0),
-            speed_ratio=result.get('rtf', 0.0),
-            chunks_processed=1,
-            model=getattr(typhoon_asr, 'model_name', 'typhoon'),
-            device=getattr(typhoon_asr, '_device', 'unknown'),
-            timestamp=datetime.now().isoformat(),
-            status="success"
-        )
-
-        logger.info(f"✅ TyphoonASR transcription completed: {len(response.text)} characters")
-        return response
+        return result
         
     except (KeyboardInterrupt, SystemExit) as e:
         logger.error(f"🛑 Server interrupt during transcription: {e}")
