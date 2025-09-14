@@ -179,6 +179,8 @@ async def startup_event():
                 checked_keys,
                 model_hint,
             )
+            # Also log full exception traceback at debug level so we can find the upstream source
+            logger.exception("MultiAgent initialization exception (full traceback): %s", e)
             logger.debug(
                 "If you expected MultiAgent to initialize: set OPENROUTER_API_KEY or TOGETHER_API_KEY,"
                 " ensure your LLM_MODEL uses a provider prefix (e.g. 'openrouter/...' or 'together_ai/...'),"
