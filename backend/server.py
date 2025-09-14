@@ -166,7 +166,24 @@ async def startup_event():
             multi_agent = MultiAgent()
             logger.info("🧠 MultiAgent orchestrator initialized")
         except Exception as e:
-            logger.warning(f"⚠️ MultiAgent init skipped: {e}")
+            # Improve clarity for missing/incorrect API key errors without leaking secrets
+            checked_keys = {
+                'OPENROUTER_API_KEY': bool(os.getenv('OPENROUTER_API_KEY')),
+                'TOGETHER_API_KEY': bool(os.getenv('TOGETHER_API_KEY')),
+                'OPENAI_API_KEY': bool(os.getenv('OPENAI_API_KEY')),
+            }
+            model_hint = os.getenv('LLM_MODEL', '<default>')
+            logger.warning(
+                "⚠️ MultiAgent init skipped: %s | checked_keys=%s | model=%s",
+                e,
+                checked_keys,
+                model_hint,
+            )
+            logger.debug(
+                "If you expected MultiAgent to initialize: set OPENROUTER_API_KEY or TOGETHER_API_KEY,"
+                " ensure your LLM_MODEL uses a provider prefix (e.g. 'openrouter/...' or 'together_ai/...'),"
+                " or set OPENAI_API_KEY if using OpenAI."
+            )
     else:
         if multi_agent_import_error:
             logger.warning(f"⚠️ MultiAgent import failed: {multi_agent_import_error}")
