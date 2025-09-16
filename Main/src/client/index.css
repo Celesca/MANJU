@@ -1,0 +1,52 @@
+@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.navbar {
+  transition: transform 0.3s ease-in-out;
+}
+
+.navbar.hide {
+  transform: translateY(100%);
+}
+
+.rainbow-button:hover {
+  background: linear-gradient(45deg, #f06, #ff0, #0f6, #06f);
+  background-size: 400% 400%;
+  animation: rainbow 3s linear infinite;
+}
+
+@keyframes rainbow-glow {
+  0%, 100% {
+    border-color: red;
+    box-shadow: 0 0 5px red;
+  }
+  16% {
+    border-color: orange;
+    box-shadow: 0 0 5px orange;
+  }
+  32% {
+    border-color: yellow;
+    box-shadow: 0 0 5px yellow;
+  }
+  48% {
+    border-color: green;
+    box-shadow: 0 0 5px green;
+  }
+  64% {
+    border-color: blue;
+    box-shadow: 0 0 5px blue;
+  }
+  80% {
+    border-color: indigo;
+    box-shadow: 0 0 5px indigo;
+  }
+}
+
+.rainbow-border {
+  border: 0px solid;
+  animation: rainbow-glow 5s linear infinite;
+  border-radius: 12px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 1);
+}
