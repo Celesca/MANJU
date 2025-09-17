@@ -322,7 +322,7 @@ class VoiceCallCenterConfig:
     """Configuration for voice call center system."""
     model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", TOGETHER_MODEL))
     temperature: float = 0.2  # Lower for more consistent responses
-    max_tokens: int = 512  # Shorter responses for speed
+    max_tokens: int = 256  # Shorter responses for speed
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     request_timeout: int = 30  # Faster timeout
