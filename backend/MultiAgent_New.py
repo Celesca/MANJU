@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Type
@@ -49,7 +50,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 # Configuration constants
-TOGETHER_MODEL = "together_ai/google/gemma-3n-E4B-it"
+TOGETHER_MODEL = "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo"
 OPENROUTER_MODEL = "openrouter/qwen/qwen3-4b:free"
 
 # Mock Product Database
@@ -322,7 +323,7 @@ class VoiceCallCenterConfig:
     """Configuration for voice call center system."""
     model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", TOGETHER_MODEL))
     temperature: float = 0.2  # Lower for more consistent responses
-    max_tokens: int = 256  # Shorter responses for speed
+    max_tokens: int = 128  # Shorter responses for speed
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     request_timeout: int = 30  # Faster timeout
@@ -465,7 +466,7 @@ class VoiceCallCenterMultiAgent:
             ),
             llm=self.llm,
             allow_delegation=False,
-            verbose=False,
+            verbose=True,
         )
     
     def _create_tasks(self, user_input: str, conversation_history: Optional[List[Dict]] = None) -> List[Task]:
@@ -556,7 +557,7 @@ class VoiceCallCenterMultiAgent:
             tasks=tasks,
             process=Process.hierarchical,  # Hierarchical for speed
             manager_llm=self.llm,
-            verbose=False,
+            verbose=True,
             max_rpm=100,  # Increased rate limit for speed
         )
         
@@ -567,6 +568,12 @@ class VoiceCallCenterMultiAgent:
             # Clean up response formatting
             if "Final Answer:" in response_text:
                 response_text = response_text.split("Final Answer:")[-1].strip()
+            
+            # Text preprocessing: remove unwanted symbols
+            response_text = response_text.replace('\n', ' ')  # Remove newlines
+            response_text = response_text.replace('**', '')  # Remove asterisks
+            response_text = re.sub(r'[^a-zA-Z0-9\s\u0E00-\u0E7F]', '', response_text)  # Keep English letters, numbers, spaces, and Thai characters
+            response_text = ' '.join(response_text.split())  # Normalize spaces
             
             processing_time = (datetime.now() - start_time).total_seconds()
             

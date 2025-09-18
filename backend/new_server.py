@@ -40,13 +40,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class ASRRequest(BaseModel):
-    """Request model for ASR configuration"""
-    language: str = "th"
-    model_id: str = "biodatlab-medium-faster"  # Default to recommended model
-    use_vad: bool = True
-    beam_size: int = 1
-
 class ModelInfo(BaseModel):
     """Model information response"""
     id: str
@@ -226,7 +219,7 @@ async def health_check():
             logger.warning(f"⚠️ LLM init during /health failed: {e}")
     if multi_agent is not None:
         try:
-            st = multi_agent.get_status()
+            st = multi_agent.get_system_status()
             llm_ready = bool(st.get("ready", False))
             llm_model = st.get("model")
             llm_engine = st.get("engine")
@@ -261,12 +254,15 @@ async def llm_health():
             raise HTTPException(status_code=503, detail=f"Failed initializing VoiceCallCenterMultiAgent: {e}")
 
     try:
-        st = multi_agent.get_status()
+        st = multi_agent.get_system_status()
         return {
-            "status": "ready" if st.get("ready") else "not_ready",
             "engine": st.get("engine"),
             "model": st.get("model"),
             "base_url": st.get("base_url"),
+            "tools": st.get("tools"),
+            "mock_products_count": st.get("mock_products_count"),
+            "ready": st.get("ready"),
+            "architecture": st.get("architecture"),
             "timestamp": datetime.now().isoformat(),
         }
     except Exception as e:
