@@ -37,7 +37,7 @@ except Exception as e:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-TOGETHER_MODEL = "together_ai/google/gemma-3n-E4B-it"
+TOGETHER_MODEL = "together_ai/Qwen/Qwen2.5-72B-Instruct-Turbo"
 OPENROUTER_MODEL = "openrouter/qwen/qwen3-4b:free"
 
 

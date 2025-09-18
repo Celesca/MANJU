@@ -27,7 +27,6 @@ import uvicorn
 # Multi-agent LLM orchestration
 multi_agent_import_error: Optional[str] = None
 try:
-    from MultiAgent import MultiAgent
     from MultiAgent_New import VoiceCallCenterMultiAgent
 except Exception as e:
     VoiceCallCenterMultiAgent = None  # Will validate on first use
@@ -159,6 +158,7 @@ async def startup_event():
         try:
             multi_agent = VoiceCallCenterMultiAgent()
             logger.info("🧠 VoiceCallCenterMultiAgent orchestrator initialized")
+            logger.info(f"🧠 Multi-agent type: {type(multi_agent).__name__} | model: {multi_agent.config.model}")
         except Exception as e:
             # Improve clarity for missing/incorrect API key errors without leaking secrets
             checked_keys = {
@@ -291,11 +291,11 @@ async def llm_generate(req: LLMRequest):
 
     try:
         logger.info("/llm called; generating response via VoiceCallCenterMultiAgent")
-        result = multi_agent.run(req.text, conversation_history=req.history)
+        result = multi_agent.process_voice_input(req.text, conversation_history=req.history)
         return LLMResponse(
             response=result.get("response", ""),
             model=result.get("model"),
-            used_base_url=result.get("used_base_url"),
+            used_base_url=None,  # Not returned by process_voice_input
             timestamp=datetime.now().isoformat(),
             status="success",
         )
@@ -438,7 +438,7 @@ if __name__ == "__main__":
     reload = os.getenv("DEBUG", "false").lower() == "true"
     
     uvicorn.run(
-        "server:app",
+        "new_server:app",
         host=host,
         port=port,
         reload=reload,
