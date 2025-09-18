@@ -206,6 +206,8 @@ class GoogleSheetsTool(BaseTool):
     name: str = "google_sheets_tool"
     description: str = "Read, search, and add data to Google Sheets"
     args_schema: Type[SheetsQueryInput] = SheetsQueryInput
+    # Declare client as a field so pydantic/BaseTool allows assignment in __init__
+    client: Optional[Any] = None
     
     def __init__(self):
         super().__init__()
@@ -268,6 +270,10 @@ class RAGTool(BaseTool):
     name: str = "rag_tool"
     description: str = "Search and retrieve information from PDF documents using RAG"
     args_schema: Type[RAGQueryInput] = RAGQueryInput
+    # Pydantic fields for attributes assigned during initialization
+    embedder: Optional[Any] = None
+    index: Optional[Any] = None
+    chunks: List[str] = Field(default_factory=list)
     
     def __init__(self):
         super().__init__()
