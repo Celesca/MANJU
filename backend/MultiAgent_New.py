@@ -546,7 +546,10 @@ class VoiceCallCenterMultiAgent:
             "Answer in one line. CLASSIFY the user's query as one of: PRODUCT, KNOWLEDGE, GENERAL. "
             "Return only the label and a 1-sentence reason. Keep the reason extremely short."
             "\n\nYou are a Call Center Supervisor that routes queries quickly."
+            "\n\n/no_think"
         )
+
+        max_iter = 2 if (self.config.base_url and "localhost" in self.config.base_url) else 1
 
         agent = Agent(
             role="Call Center Supervisor",
@@ -555,7 +558,7 @@ class VoiceCallCenterMultiAgent:
             llm=self.llm,
             allow_delegation=False,
             verbose=False,
-            max_iter=1,  # enforce single iteration
+            max_iter=max_iter,
         )
         self._cached_agents['supervisor'] = agent
         return agent
@@ -567,7 +570,10 @@ class VoiceCallCenterMultiAgent:
         backstory = (
             "SYSTEM INSTRUCTIONS: Do not think out loud. Provide a short structured answer. Use tools if needed. "
             "Return a concise summary no longer than 3 sentences."
+            "\n\n/no_think"
         )
+
+        max_iter = 2 if (self.config.base_url and "localhost" in self.config.base_url) else 1
 
         agent = Agent(
             role="Product Specialist",
@@ -577,7 +583,7 @@ class VoiceCallCenterMultiAgent:
             llm=self.llm,
             allow_delegation=False,
             verbose=False,
-            max_iter=1,
+            max_iter=max_iter,
         )
         self._cached_agents['product'] = agent
         return agent
@@ -589,7 +595,10 @@ class VoiceCallCenterMultiAgent:
         backstory = (
             "SYSTEM INSTRUCTIONS: Do not think aloud. Search documents and return the top 1-2 bullet points. "
             "Keep answer <= 2 sentences."
+            "\n\n/no_think"
         )
+
+        max_iter = 2 if (self.config.base_url and "localhost" in self.config.base_url) else 1
 
         agent = Agent(
             role="Knowledge Specialist",
@@ -599,7 +608,7 @@ class VoiceCallCenterMultiAgent:
             llm=self.llm,
             allow_delegation=False,
             verbose=False,
-            max_iter=1,
+            max_iter=max_iter,
         )
         self._cached_agents['knowledge'] = agent
         return agent
@@ -611,7 +620,10 @@ class VoiceCallCenterMultiAgent:
         backstory = (
             "SYSTEM INSTRUCTIONS: Rephrase and shorten user-facing text to <=3 brief sentences suitable for voice. "
             "Do not include internal reasoning or extra sections."
+            "\n\n/no_think"
         )
+
+        max_iter = 2 if (self.config.base_url and "localhost" in self.config.base_url) else 1
 
         agent = Agent(
             role="Customer Response Specialist",
@@ -620,7 +632,7 @@ class VoiceCallCenterMultiAgent:
             llm=self.llm,
             allow_delegation=False,
             verbose=False,
-            max_iter=1,
+            max_iter=max_iter,
         )
         self._cached_agents['response'] = agent
         return agent
@@ -650,7 +662,7 @@ class VoiceCallCenterMultiAgent:
                 "ตอบแค่ PRODUCT, KNOWLEDGE, หรือ GENERAL พร้อมเหตุผลสั้นๆ"
             ),
             agent=self._create_supervisor_agent(),
-            expected_output="ประเภทคำถาม (PRODUCT/KNOWLEDGE/GENERAL) พร้อมเหตุผลสั้นๆ"
+            expected_output="ประเภทคำถาม (PRODUCT/KNOWLEDGE/GENERAL) พร้อมเหตุผลสั้นๆ\n\n/no_think"
         )
         
         # Task 2: Information gathering (conditional)
@@ -663,7 +675,7 @@ class VoiceCallCenterMultiAgent:
                 "ค้นหาข้อมูลที่เกี่ยวข้องและสรุปผลลัพธ์อย่างกระชับ"
             ),
             agent=self._create_product_agent(),  # Will delegate based on routing
-            expected_output="ข้อมูลที่ค้นหาได้พร้อมรายละเอียดสำคัญ",
+            expected_output="ข้อมูลที่ค้นหาได้พร้อมรายละเอียดสำคัญ\n\n/no_think",
             context=[routing_task]
         )
         
@@ -679,7 +691,7 @@ class VoiceCallCenterMultiAgent:
                 "หลีกเลี่ยงข้อความยาวหรือรายละเอียดเทคนิคมากเกินไป"
             ),
             agent=self._create_response_agent(),
-            expected_output="คำตอบสุดท้ายสำหรับลูกค้า (กระชับและเหมาะสมกับ Voice Chat)",
+            expected_output="คำตอบสุดท้ายสำหรับลูกค้า (กระชับและเหมาะสมกับ Voice Chat)\n\n/no_think",
             context=[routing_task, info_task]
         )
         
@@ -704,7 +716,7 @@ class VoiceCallCenterMultiAgent:
                     "Return only: PRODUCT or KNOWLEDGE or GENERAL (no explanation)."
                 ),
                 agent=self._create_supervisor_agent(),
-                expected_output="PRODUCT or KNOWLEDGE or GENERAL"
+                expected_output="PRODUCT or KNOWLEDGE or GENERAL\n\n/no_think"
             )
             
             small_crew = Crew(
