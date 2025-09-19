@@ -1,0 +1,3 @@
+[submodule "backend/F5-TTS-THAI-API"]
+	path = backend/F5-TTS-THAI-API
+	url = https://github.com/Celesca/F5-TTS-THAI-API
