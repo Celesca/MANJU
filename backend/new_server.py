@@ -32,6 +32,16 @@ except Exception as e:
     VoiceCallCenterMultiAgent = None  # Will validate on first use
     multi_agent_import_error = str(e)
 
+# TTS API router
+tts_router_import_error: Optional[str] = None
+try:
+    tts_src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "F5-TTS-THAI-API", "src")
+    sys.path.append(tts_src_path)
+    from f5_tts.f5_api_new_integrate import router as tts_router
+except Exception as e:
+    tts_router = None
+    tts_router_import_error = str(e)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -426,6 +436,14 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": f"Internal server error: {str(exc)}"}
     )
+
+
+# Mount TTS router if available
+if tts_router:
+    app.include_router(tts_router, prefix="/api/tts", tags=["TTS"])
+    logger.info("✅ TTS API router mounted at /api/tts")
+elif tts_router_import_error:
+    logger.warning(f"⚠️ TTS API router not available: {tts_router_import_error}")
 
 
 if __name__ == "__main__":
