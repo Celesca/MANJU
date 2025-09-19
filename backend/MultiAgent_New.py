@@ -3,7 +3,8 @@ Voice Chatbot Call Center Multi-Agent System with CrewAI
 Fast hierarchical architecture with RAG and Google Sheets integration
 """
 
-from __future__ import annotations
+import concurrent.futures
+from functools import lru_cache
 
 import os
 import json
@@ -435,6 +436,12 @@ class VoiceCallCenterConfig:
             else:
                 self.base_url = "https://api.together.xyz/v1"
         
+        # Fallback to Ollama if no API keys found
+        if not self.api_key:
+            self.model = "ollama/qwen3:8b"
+            self.base_url = "http://localhost:11434"
+            self.api_key = None  # Ollama doesn't require an API key
+        
         return self
 
     def refresh(self):
@@ -476,14 +483,15 @@ class VoiceCallCenterMultiAgent:
         _late_env_hydrate()
         
         self.config = (config or VoiceCallCenterConfig()).resolve()
-        if not self.config.api_key:
-            raise RuntimeError("Missing TOGETHER_API_KEY or OPENROUTER_API_KEY")
+        if not self.config.api_key and not (self.config.base_url and "localhost" in self.config.base_url):
+            raise RuntimeError("Missing TOGETHER_API_KEY or OPENROUTER_API_KEY, and Ollama not configured")
         
         # Set environment variables for LiteLLM
         if "openrouter.ai" in (self.config.base_url or ""):
             os.environ["OPENROUTER_API_KEY"] = self.config.api_key
-        else:
+        elif "together.xyz" in (self.config.base_url or ""):
             os.environ["TOGETHER_API_KEY"] = self.config.api_key
+        # For localhost/Ollama, no env var needed
         
         # Apply speed-mode overrides
         effective_model = self.config.model
@@ -516,89 +524,116 @@ class VoiceCallCenterMultiAgent:
             'rag': RAGTool()
         }
 
+                # --- Local caches to avoid repeated work ---
+        self._rag_cache: Dict[str, str] = {}
+        self._sheets_cache: Dict[str, str] = {}
+        self._product_cache: Dict[str, str] = {}
+        # Thread pool for timeouts / parallel queries
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
         # Cache agents to avoid recreating them on every request (reduces overhead)
         self._cached_agents: Dict[str, Agent] = {}
         
         logger.info(f"VoiceCallCenter initialized | model={self.config.model} | tools={list(self.tools.keys())}")
     
     def _create_supervisor_agent(self) -> Agent:
-        """Create the supervisor agent that routes requests."""
+        """Create the supervisor agent that routes requests. Deterministic, one-shot."""
         if 'supervisor' in self._cached_agents:
             return self._cached_agents['supervisor']
+
+        backstory = (
+            "SYSTEM INSTRUCTIONS: You MUST NOT think out loud or produce chain-of-thought. "
+            "Answer in one line. CLASSIFY the user's query as one of: PRODUCT, KNOWLEDGE, GENERAL. "
+            "Return only the label and a 1-sentence reason. Keep the reason extremely short."
+            "\n\nYou are a Call Center Supervisor that routes queries quickly."
+            "\n\n/no_think"
+        )
+
+        max_iter = 2 if (self.config.base_url and "localhost" in self.config.base_url) else 1
 
         agent = Agent(
             role="Call Center Supervisor",
             goal="รับฟังคำถามลูกค้าและส่งต่อไปยังผู้เชี่ยวชาญที่เหมาะสม อย่างรวดเร็วและแม่นยำ",
-            backstory=(
-                "คุณเป็นหัวหน้าทีม Call Center ที่มีประสบการณ์สูง "
-                "สามารถแยกแยะประเภทคำถามและส่งต่อให้ผู้เชี่ยวชาญได้อย่างรวดเร็ว "
-                "เช่น: สินค้า -> Product Agent, นโยบาย -> Knowledge Agent"
-            ),
+            backstory=backstory,
             llm=self.llm,
-            allow_delegation=True,
+            allow_delegation=False,
             verbose=False,
-            max_iter=2,  # Limit iterations for speed
+            max_iter=max_iter,
         )
         self._cached_agents['supervisor'] = agent
         return agent
-    
+
     def _create_product_agent(self) -> Agent:
-        """Create the product specialist agent."""
         if 'product' in self._cached_agents:
             return self._cached_agents['product']
+
+        backstory = (
+            "SYSTEM INSTRUCTIONS: Do not think out loud. Provide a short structured answer. Use tools if needed. "
+            "Return a concise summary no longer than 3 sentences."
+            "\n\n/no_think"
+        )
+
+        max_iter = 2 if (self.config.base_url and "localhost" in self.config.base_url) else 1
 
         agent = Agent(
             role="Product Specialist",
             goal="ค้นหาและให้ข้อมูลสินค้า SKU รายละเอียดการคืนสินค้า และข้อมูลเจ้าของสินค้าอย่างรวดเร็ว",
-            backstory=(
-                "คุณเป็นผู้เชี่ยวชาญด้านสินค้าและฐานข้อมูลลูกค้า "
-                "มีความเชี่ยวชาญในการค้นหาข้อมูลสินค้า การคืนสินค้า และรายละเอียดการจัดส่ง"
-            ),
+            backstory=backstory,
             tools=[self.tools['products'], self.tools['sheets'], self.tools['time']],
             llm=self.llm,
             allow_delegation=False,
             verbose=False,
-    )
+            max_iter=max_iter,
+        )
         self._cached_agents['product'] = agent
         return agent
-    
+
     def _create_knowledge_agent(self) -> Agent:
-        """Create the knowledge specialist agent."""
         if 'knowledge' in self._cached_agents:
             return self._cached_agents['knowledge']
 
+        backstory = (
+            "SYSTEM INSTRUCTIONS: Do not think aloud. Search documents and return the top 1-2 bullet points. "
+            "Keep answer <= 2 sentences."
+            "\n\n/no_think"
+        )
+
+        max_iter = 2 if (self.config.base_url and "localhost" in self.config.base_url) else 1
+
         agent = Agent(
-            role="Knowledge Specialist", 
+            role="Knowledge Specialist",
             goal="ค้นหาข้อมูลจากเอกสารนโยบาย คู่มือ และให้คำแนะนำตามระเบียบบริษัทอย่างแม่นยำ",
-            backstory=(
-                "คุณเป็นผู้เชี่ยวชาญด้านนโยบายและระเบียบบริษัท "
-                "มีความรู้เกี่ยวกับการรับประกัน การคืนสินค้า และขั้นตอนต่างๆ ของบริษัท"
-            ),
+            backstory=backstory,
             tools=[self.tools['rag'], self.tools['time']],
             llm=self.llm,
             allow_delegation=False,
             verbose=False,
-    )
+            max_iter=max_iter,
+        )
         self._cached_agents['knowledge'] = agent
         return agent
-    
+
     def _create_response_agent(self) -> Agent:
-        """Create the response composition agent."""
         if 'response' in self._cached_agents:
             return self._cached_agents['response']
+
+        backstory = (
+            "SYSTEM INSTRUCTIONS: Rephrase and shorten user-facing text to <=3 brief sentences suitable for voice. "
+            "Do not include internal reasoning or extra sections."
+            "\n\n/no_think"
+        )
+
+        max_iter = 2 if (self.config.base_url and "localhost" in self.config.base_url) else 1
 
         agent = Agent(
             role="Customer Response Specialist",
             goal="จัดทำคำตอบที่สุภาพ กระชับ และนำไปใช้ได้ทันที สำหรับลูกค้าผ่านระบบ Voice Chat",
-            backstory=(
-                "คุณเป็นผู้เชี่ยวชาญด้านการสื่อสารกับลูกค้า "
-                "สามารถสรุปข้อมูลซับซ้อนให้เป็นคำตอบสั้นๆ ที่ลูกค้าเข้าใจได้ง่าย "
-                "และเหมาะสมกับการสนทนาด้วยเสียง"
-            ),
+            backstory=backstory,
             llm=self.llm,
             allow_delegation=False,
-            verbose=True,
-    )
+            verbose=False,
+            max_iter=max_iter,
+        )
         self._cached_agents['response'] = agent
         return agent
     
@@ -627,7 +662,7 @@ class VoiceCallCenterMultiAgent:
                 "ตอบแค่ PRODUCT, KNOWLEDGE, หรือ GENERAL พร้อมเหตุผลสั้นๆ"
             ),
             agent=self._create_supervisor_agent(),
-            expected_output="ประเภทคำถาม (PRODUCT/KNOWLEDGE/GENERAL) พร้อมเหตุผลสั้นๆ"
+            expected_output="ประเภทคำถาม (PRODUCT/KNOWLEDGE/GENERAL) พร้อมเหตุผลสั้นๆ\n\n/no_think"
         )
         
         # Task 2: Information gathering (conditional)
@@ -640,7 +675,7 @@ class VoiceCallCenterMultiAgent:
                 "ค้นหาข้อมูลที่เกี่ยวข้องและสรุปผลลัพธ์อย่างกระชับ"
             ),
             agent=self._create_product_agent(),  # Will delegate based on routing
-            expected_output="ข้อมูลที่ค้นหาได้พร้อมรายละเอียดสำคัญ",
+            expected_output="ข้อมูลที่ค้นหาได้พร้อมรายละเอียดสำคัญ\n\n/no_think",
             context=[routing_task]
         )
         
@@ -656,11 +691,152 @@ class VoiceCallCenterMultiAgent:
                 "หลีกเลี่ยงข้อความยาวหรือรายละเอียดเทคนิคมากเกินไป"
             ),
             agent=self._create_response_agent(),
-            expected_output="คำตอบสุดท้ายสำหรับลูกค้า (กระชับและเหมาะสมกับ Voice Chat)",
+            expected_output="คำตอบสุดท้ายสำหรับลูกค้า (กระชับและเหมาะสมกับ Voice Chat)\n\n/no_think",
             context=[routing_task, info_task]
         )
         
         return [routing_task, info_task, response_task]
+    
+    def _fast_path_improved(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        Ultra-fast path: use agent-based intent classification + direct tool calls + caches to answer without running Crew.
+        Returns a response dict or None if not handled.
+        """
+        start = datetime.now()
+        
+        # Step 1: Use supervisor agent to classify intent (fast, single iteration)
+        try:
+            classify_task = Task(
+                description=(
+                    f"Classify this user query into one of: PRODUCT, KNOWLEDGE, GENERAL.\n\n"
+                    f"Query: '{text}'\n\n"
+                    "PRODUCT: product info, returns, owners, prices, SKUs.\n"
+                    "KNOWLEDGE: policies, warranties, procedures, documents.\n"
+                    "GENERAL: greetings, general help, small talk.\n\n"
+                    "Return only: PRODUCT or KNOWLEDGE or GENERAL (no explanation)."
+                ),
+                agent=self._create_supervisor_agent(),
+                expected_output="PRODUCT or KNOWLEDGE or GENERAL\n\n/no_think"
+            )
+            
+            small_crew = Crew(
+                agents=[self._create_supervisor_agent()],
+                tasks=[classify_task],
+                process=Process.sequential,
+                verbose=False,
+                max_rpm=200,
+            )
+            
+            intent_result = small_crew.kickoff()
+            intent_raw = str(intent_result).strip().upper()
+            # Extract intent from response
+            if 'PRODUCT' in intent_raw:
+                intent = 'PRODUCT'
+            elif 'KNOWLEDGE' in intent_raw:
+                intent = 'KNOWLEDGE'
+            elif 'GENERAL' in intent_raw:
+                intent = 'GENERAL'
+            else:
+                intent = 'GENERAL'  # default fallback
+            
+        except Exception as e:
+            logger.warning(f"Agent classification failed, falling back to keyword: {e}")
+            intent = self._fast_intent_classifier(text)  # fallback to keyword if agent fails
+        
+        # Step 2: Based on intent, handle with direct tools/caches
+        # ...existing code...
+
+        # PRODUCT fast-handling: direct DB / sheets lookup (parallel), then compose
+        if intent == 'PRODUCT':
+            # try cached SKU/product first
+            sku_match = re.search(r"[A-Za-z]{2,3}\d{3}", text)
+            sku = sku_match.group(0) if sku_match else None
+
+            # If SKU present, direct product DB
+            if sku:
+                cache_key = f"sku:{sku.lower()}"
+                if cache_key in self._product_cache:
+                    resp = self._product_cache[cache_key]
+                else:
+                    resp = self.tools['products']._run(query_type='get_by_sku', sku=sku)
+                    self._product_cache[cache_key] = resp
+                final = self._compose_final_response(resp, 'PRODUCT', text)
+                return {
+                    "response": final,
+                    "model": self.config.model,
+                    "processing_time_seconds": (datetime.now() - start).total_seconds(),
+                    "fast_path": True,
+                    "agent_path": "direct_product"
+                }
+
+            # No SKU: run product search + sheets search in parallel, use first non-empty
+            futures = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                futures.append(ex.submit(self.tools['products']._run, 'search', text))
+                futures.append(ex.submit(self.tools['sheets']._run, 'product_sheet', 'search', text) if hasattr(self.tools['sheets'], '_run') else None)
+                results = []
+                for f in futures:
+                    if f is None:
+                        continue
+                    try:
+                        results.append(f.result(timeout=1.0))
+                    except Exception:
+                        results.append(None)
+
+            # pick first non-empty result
+            resp = next((r for r in results if r), None)
+            if not resp:
+                # no tool results -> quick canned ask-for-more-info
+                resp = "ขอรบกวนระบุรหัสสินค้า (เช่น TEL001) หรือชื่อเจ้าของสินค้า เพื่อให้ผมค้นหาได้แม่นยำครับ"
+                final = resp
+            else:
+                final = self._compose_final_response(resp, 'PRODUCT', text)
+
+            return {
+                "response": final,
+                "model": self.config.model,
+                "processing_time_seconds": (datetime.now() - start).total_seconds(),
+                "fast_path": True,
+                "agent_path": "product_search_parallel"
+            }
+
+        # KNOWLEDGE fast-handling: RAG direct + cache
+        if intent == 'KNOWLEDGE':
+            cache_key = f"rag:{text.lower()[:200]}"
+            if cache_key in self._rag_cache:
+                resp = self._rag_cache[cache_key]
+            else:
+                # call RAG directly (fast)
+                try:
+                    resp = self.tools['rag']._run(query=text, top_k=2)
+                except Exception as e:
+                    resp = f"ไม่สามารถค้นหาเอกสารขณะนี้: {e}"
+                self._rag_cache[cache_key] = resp
+
+            final = self._compose_final_response(resp, 'KNOWLEDGE', text)
+            return {
+                "response": final,
+                "model": self.config.model,
+                "processing_time_seconds": (datetime.now() - start).total_seconds(),
+                "fast_path": True,
+                "agent_path": "direct_rag"
+            }
+
+        # GENERAL: canned small replies
+        if intent == 'GENERAL':
+            resp = "สวัสดีครับ ผมช่วยอะไรได้บ้างครับ?"
+            final = self._compose_final_response(resp, 'GENERAL', text)
+            return {
+                "response": final,
+                "model": self.config.model,
+                "processing_time_seconds": (datetime.now() - start).total_seconds(),
+                "fast_path": True,
+                "agent_path": "canned"
+            }
+
+        # If nothing matched, return None (caller will continue with Crew)
+        return None
+
 
     def _fast_intent_classifier(self, text: str) -> str:
         """Very small heuristic intent classifier.
@@ -673,18 +849,18 @@ class VoiceCallCenterMultiAgent:
         if re.search(r"[a-z]{2,3}\d{3}", t) or re.search(r"รหัส\s*[:\-]?\s*[a-zA-Z0-9]{3,}", t):
             return 'PRODUCT'
 
-        # Keywords for product queries
-        product_keywords = ['สินค้า', 'รหัส', 'sku', 'model', 'ราคา', 'มีสินค้ารหัส']
+        # Keywords for product queries (expanded)
+        product_keywords = ['สินค้า', 'รหัส', 'sku', 'model', 'ราคา', 'มีสินค้ารหัส', 'แพ็กเกจ', 'อินเทอร์เน็ต', 'fiber', 'กี่บาท', 'เริ่มต้น', 'แพคเกจ']
         if any(k in t for k in product_keywords):
             return 'PRODUCT'
 
-        # Knowledge / policy keywords
-        knowledge_keywords = ['นโยบาย', 'รับประกัน', 'การคืน', 'เงื่อนไข', 'ขั้นตอน', 'คู่มือ']
+        # Knowledge / policy keywords (expanded)
+        knowledge_keywords = ['นโยบาย', 'รับประกัน', 'การคืน', 'เงื่อนไข', 'ขั้นตอน', 'คู่มือ', 'วิธีการ', 'เอกสาร', 'กฎ']
         if any(k in t for k in knowledge_keywords):
             return 'KNOWLEDGE'
 
         # Greetings and general
-        general_keywords = ['สวัสดี', 'ขอบคุณ', 'ราคาโดยรวม', 'ช่วย', 'สอบถาม']
+        general_keywords = ['สวัสดี', 'ขอบคุณ', 'ราคาโดยรวม', 'ช่วย', 'สอบถาม', 'ดีครับ', 'ครับผม']
         if any(k in t for k in general_keywords):
             return 'GENERAL'
 
@@ -758,163 +934,9 @@ class VoiceCallCenterMultiAgent:
         tasks = self._create_tasks(text, conversation_history)
 
         # Fast-path: if speed_mode is enabled, use an intent classifier to
-        # short-circuit common query types and avoid running the full Crew.
-        if getattr(self.config, 'speed_mode', False):
-            intent = self._fast_intent_classifier(text)
-            if intent == 'PRODUCT':
-                # Let the Product Agent gather info and the Response Agent compose the final reply.
-                # Build two small tasks: info gathering (product) and response composition.
-                try:
-                    sku_match = re.search(r"[A-Za-z]{2,3}\d{3}", text)
-                    sku = sku_match.group(0) if sku_match else None
-
-                    # Info task: ask product agent to search by SKU or by term
-                    info_desc = (
-                        f"ค้นหาข้อมูลที่เกี่ยวข้องกับคำถามลูกค้า: '{text}'\n"
-                        + (f"หากพบ รหัสสินค้า: {sku} ให้แสดงรายละเอียดสินค้าและข้อมูลการคืน\n" if sku else "ค้นหาสินค้าจากคำอธิบายหรือชื่อเจ้าของ\n")
-                        + "ให้สรุปข้อมูลสำคัญที่ตอบคำถามได้อย่างกระชับ"
-                    )
-                    info_task = Task(
-                        description=info_desc,
-                        agent=self._create_product_agent(),
-                        expected_output="ข้อมูลที่ค้นหาได้พร้อมรายละเอียดสำคัญ"
-                    )
-
-                    # Response task: compose a short voice-friendly reply based on info_task
-                    response_task = Task(
-                        description=(
-                            "จากข้อมูลที่ได้ สร้างคำตอบสั้น กระชับ และสุภาพสำหรับลูกค้าผ่านระบบเสียง (ไม่เกิน 3 ประโยค)"
-                        ),
-                        agent=self._create_response_agent(),
-                        expected_output="คำตอบสุดท้ายสำหรับลูกค้า (กระชับและเหมาะสมกับ Voice Chat)",
-                        context=[info_task]
-                    )
-
-                    small_crew = Crew(
-                        agents=[self._create_product_agent(), self._create_response_agent()],
-                        tasks=[info_task, response_task],
-                        process=Process.hierarchical,
-                        manager_llm=self.llm,
-                        verbose=False,
-                        max_rpm=200,
-                    )
-
-                    result = small_crew.kickoff()
-                    response_text = str(result).strip()
-                    # Clean and normalize output similar to main flow
-                    if "Final Answer:" in response_text:
-                        response_text = response_text.split("Final Answer:")[-1].strip()
-                    response_text = response_text.replace('\n', ' ')
-                    response_text = response_text.replace('**', '')
-                    response_text = re.sub(r'[^a-zA-Z0-9\s\u0E00-\u0E7F]', '', response_text)
-                    response_text = ' '.join(response_text.split())
-
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    return {
-                        'response': response_text,
-                        'model': self.config.model,
-                        'processing_time_seconds': processing_time,
-                        'tools_available': list(self.tools.keys()),
-                        'timestamp': datetime.now().isoformat(),
-                        'fast_path': True,
-                        'agent_path': 'product+response'
-                    }
-                except Exception as _e:
-                    # Fallback to fast composer if the small crew fails
-                    logger.warning(f"Product fast-crew failed, falling back to composer: {_e}")
-                    if sku:
-                        resp = self.tools['products']._run(query_type='get_by_sku', sku=sku)
-                    else:
-                        resp = self.tools['products']._run(query_type='search', search_term=text)
-                    final_resp = self._compose_final_response(resp, intent='PRODUCT', user_input=text)
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    return {
-                        'response': final_resp,
-                        'model': self.config.model,
-                        'processing_time_seconds': processing_time,
-                        'tools_available': list(self.tools.keys()),
-                        'timestamp': datetime.now().isoformat(),
-                        'fast_path': True,
-                        'fallback': True,
-                    }
-
-            if intent == 'KNOWLEDGE':
-                try:
-                    # Info task: ask knowledge agent to search documents
-                    info_task = Task(
-                        description=(
-                            f"ค้นหาเอกสารหรือข้อกำหนดที่เกี่ยวข้องกับคำถาม: '{text}'\n"
-                            "ให้สรุปประเด็นสำคัญที่เกี่ยวข้องและหลักฐานอ้างอิงสั้นๆ"
-                        ),
-                        agent=self._create_knowledge_agent(),
-                        expected_output="ข้อความสรุปจากเอกสารที่เกี่ยวข้อง",
-                    )
-
-                    response_task = Task(
-                        description=(
-                            "จากข้อมูลที่ได้ สร้างคำตอบสั้น กระชับ และสุภาพสำหรับลูกค้าผ่านระบบเสียง (ไม่เกิน 3 ประโยค)"
-                        ),
-                        agent=self._create_response_agent(),
-                        expected_output="คำตอบสุดท้ายสำหรับลูกค้า (กระชับและเหมาะสมกับ Voice Chat)",
-                        context=[info_task]
-                    )
-
-                    small_crew = Crew(
-                        agents=[self._create_knowledge_agent(), self._create_response_agent()],
-                        tasks=[info_task, response_task],
-                        process=Process.hierarchical,
-                        manager_llm=self.llm,
-                        verbose=False,
-                        max_rpm=200,
-                    )
-
-                    result = small_crew.kickoff()
-                    response_text = str(result).strip()
-                    if "Final Answer:" in response_text:
-                        response_text = response_text.split("Final Answer:")[-1].strip()
-                    response_text = response_text.replace('\n', ' ')
-                    response_text = response_text.replace('**', '')
-                    response_text = re.sub(r'[^a-zA-Z0-9\s\u0E00-\u0E7F]', '', response_text)
-                    response_text = ' '.join(response_text.split())
-
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    return {
-                        'response': response_text,
-                        'model': self.config.model,
-                        'processing_time_seconds': processing_time,
-                        'tools_available': list(self.tools.keys()),
-                        'timestamp': datetime.now().isoformat(),
-                        'fast_path': True,
-                        'agent_path': 'knowledge+response'
-                    }
-                except Exception as _e:
-                    logger.warning(f"Knowledge fast-crew failed, falling back to composer: {_e}")
-                    resp = self.tools['rag']._run(query=text, top_k=2)
-                    final_resp = self._compose_final_response(resp, intent='KNOWLEDGE', user_input=text)
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    return {
-                        'response': final_resp,
-                        'model': self.config.model,
-                        'processing_time_seconds': processing_time,
-                        'tools_available': list(self.tools.keys()),
-                        'timestamp': datetime.now().isoformat(),
-                        'fast_path': True,
-                        'fallback': True,
-                    }
-
-            # GENERAL delegates to a short canned reply for speed
-            if intent == 'GENERAL':
-                resp = "สวัสดีครับ ผมช่วยอะไรได้บ้างครับ?"
-                final_resp = self._compose_final_response(resp, intent='GENERAL', user_input=text)
-                processing_time = (datetime.now() - start_time).total_seconds()
-                return {
-                    'response': final_resp,
-                    'model': self.config.model,
-                    'processing_time_seconds': processing_time,
-                    'tools_available': list(self.tools.keys()),
-                    'timestamp': datetime.now().isoformat(),
-                    'fast_path': True,
-                }
+        fast_result = self._fast_path_improved(text)
+        if fast_result:
+            return fast_result
         
         # Use hierarchical process for speed
         crew = Crew(
@@ -930,7 +952,14 @@ class VoiceCallCenterMultiAgent:
         )
         
         try:
-            result = crew.kickoff()
+            future = self._executor.submit(crew.kickoff)
+            try:
+                # limit hierarchical crew to a short timeout; if exceeded, fallback
+                result = future.result(timeout=2.5)
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                raise RuntimeError("LLM crew timed out (fast-fallback engaged)")
+            
             response_text = str(result).strip()
             
             # Clean up response formatting
