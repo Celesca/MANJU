@@ -33,9 +33,17 @@ requests>=2.31.0
 # RAG (Retrieval-Augmented Generation) dependencies
 chromadb>=0.4.0
 sentence-transformers>=2.2.0
+PyPDF2>=3.0.0
+faiss-cpu>=1.7.0
+
+# Google Sheets integration
+gspread>=5.0.0
+oauth2client>=4.1.0
 
 # Additional utilities
 pandas>=2.0.0
+pytz>=2023.0
+pydantic>=2.0.0
 
 # TensorFlow compatibility for Transformers
 tf-keras

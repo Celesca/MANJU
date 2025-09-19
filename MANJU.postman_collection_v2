@@ -1,0 +1,381 @@
+{
+	"info": {
+		"_postman_id": "20ea28e9-7970-4bb7-87c6-08633854e948",
+		"name": "MANJU",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "31194739"
+	},
+	"item": [
+		{
+			"name": "ASR",
+			"item": [
+				{
+					"name": "Help",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}",
+							"host": [
+								"{{baseUrl}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/health",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"health"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "get models",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/models",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"models"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "POST ASR",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "/C:/Users/Sawit/Desktop/Super AI SS5 Level 2/Hack 4/เสียง/000000_0.m4a"
+								},
+								{
+									"key": "model_id",
+									"value": "biodatlab-medium-faster",
+									"type": "text"
+								},
+								{
+									"key": "language",
+									"value": "th",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/asr",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"asr"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Change Model",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/models/pathumma-large/load",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"models",
+								"pathumma-large",
+								"load"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "New Request",
+					"request": {
+						"method": "GET",
+						"header": []
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "ASR Onnx",
+			"item": [
+				{
+					"name": "Health Onnx",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/onnx/health",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"onnx",
+								"health"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "get models Copy",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/onnx/models",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"onnx",
+								"models"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Health Onnx Copy",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/onnx/",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"onnx",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Load Model Onnx",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/onnx/models/whisper-large-v3-onnx/load",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"onnx",
+								"models",
+								"whisper-large-v3-onnx",
+								"load"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "TTS",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseURL}}/health",
+							"host": [
+								"{{baseURL}}"
+							],
+							"path": [
+								"health"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Inference",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "ref_audio",
+									"type": "file",
+									"src": "/C:/Users/Sawit/Desktop/folk_voice.wav"
+								},
+								{
+									"key": "ref_text",
+									"value": "ฉันจะไปเที่ยวที่เชียงใหม่เพื่อไปหาแฟนและสัมผัสอากาศหนาวในฤดูหนาว",
+									"type": "text"
+								},
+								{
+									"key": "gen_text",
+									"value": "สวัสดีค่ะ มีอะไรให้ฉันช่วยไหมคะ",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseURL}}/tts",
+							"host": [
+								"{{baseURL}}"
+							],
+							"path": [
+								"tts"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Inference New",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "ref_audio",
+									"value": "",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseURL}}/tts",
+							"host": [
+								"{{baseURL}}"
+							],
+							"path": [
+								"tts"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "LLM",
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/llm/health",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"llm",
+						"health"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "New Request",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"text\": \"คุณคือใคร?\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{baseUrl}}/llm",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"llm"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "https://d85376d145d1.ngrok-free.app"
+		}
+	]
+}
