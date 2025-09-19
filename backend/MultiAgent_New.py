@@ -436,6 +436,12 @@ class VoiceCallCenterConfig:
             else:
                 self.base_url = "https://api.together.xyz/v1"
         
+        # Fallback to Ollama if no API keys found
+        if not self.api_key:
+            self.model = "ollama/qwen3:4b"
+            self.base_url = "http://localhost:11434"
+            self.api_key = None  # Ollama doesn't require an API key
+        
         return self
 
     def refresh(self):
@@ -477,14 +483,15 @@ class VoiceCallCenterMultiAgent:
         _late_env_hydrate()
         
         self.config = (config or VoiceCallCenterConfig()).resolve()
-        if not self.config.api_key:
-            raise RuntimeError("Missing TOGETHER_API_KEY or OPENROUTER_API_KEY")
+        if not self.config.api_key and not (self.config.base_url and "localhost" in self.config.base_url):
+            raise RuntimeError("Missing TOGETHER_API_KEY or OPENROUTER_API_KEY, and Ollama not configured")
         
         # Set environment variables for LiteLLM
         if "openrouter.ai" in (self.config.base_url or ""):
             os.environ["OPENROUTER_API_KEY"] = self.config.api_key
-        else:
+        elif "together.xyz" in (self.config.base_url or ""):
             os.environ["TOGETHER_API_KEY"] = self.config.api_key
+        # For localhost/Ollama, no env var needed
         
         # Apply speed-mode overrides
         effective_model = self.config.model
