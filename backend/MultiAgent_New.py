@@ -438,7 +438,7 @@ class VoiceCallCenterConfig:
         
         # Fallback to Ollama if no API keys found
         if not self.api_key:
-            self.model = "ollama/gpt-oss:latest"
+            self.model = "ollama/qwen3:8b"
             self.base_url = "http://localhost:11434"
             self.api_key = None  # Ollama doesn't require an API key
         
