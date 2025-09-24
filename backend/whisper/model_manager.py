@@ -114,6 +114,17 @@ class ModelManager:
                 recommended=True
             ),
             
+            "pathumma-medium": ModelInfo(
+                name="pathumma-medium",
+                display_name="Pathumma Whisper Thai Medium",
+                model_type=ModelType.STANDARD_WHISPER,
+                model_path="nectec/Pathumma-whisper-th-medium",
+                language="th",
+                description="Thai-specific medium model from NECTEC, optimized for Thai language with good balance of speed and accuracy",
+                performance_tier="balanced",
+                recommended=True
+            ),
+            
             "large-v3-standard": ModelInfo(
                 name="large-v3-standard",
                 display_name="Whisper Large-v3 (Standard)",
