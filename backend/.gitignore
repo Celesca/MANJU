@@ -2,3 +2,4 @@
 vector_db
 models/
 __pycache__
+client_secret.json
