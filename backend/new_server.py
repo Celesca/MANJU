@@ -20,9 +20,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # FastAPI and related imports
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from starlette.responses import Response as StarletteResponse
+import json
 from pydantic import BaseModel
 import uvicorn
+import importlib
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 # Multi-agent LLM orchestration
 multi_agent_import_error: Optional[str] = None
@@ -41,6 +45,13 @@ try:
 except Exception as e:
     tts_router = None
     tts_router_import_error = str(e)
+
+# Attempt to import the TTS module for direct internal calls (optional)
+tts_module = None
+try:
+    tts_module = importlib.import_module("f5_tts.f5_api_new_integrate")
+except Exception:
+    tts_module = None
 
 # Configure logging
 logging.basicConfig(
@@ -318,6 +329,11 @@ async def llm_generate(req: LLMRequest):
 @app.post("/api/asr")
 async def transcribe_audio(
     file: UploadFile = File(..., description="Audio file to transcribe"),
+    forward_to_llm: bool = Form(False, description="If true, forward the transcription to /llm and return the LLM result"),
+    synthesize: bool = Form(False, description="If true and forward_to_llm=True, synthesize the LLM result via TTS"),
+    fast_mode_tts: bool = Form(False, description="Enable fast TTS mode when synthesizing"),
+    return_tts_file: bool = Form(False, description="Return TTS file response directly if TTS used"),
+    history: Optional[str] = Form(None, description="Optional conversation history JSON string (list of {role,content})")
 ):
     """
     Transcribe audio file to Thai text using selected model
@@ -368,6 +384,28 @@ async def transcribe_audio(
         logger.info("🎵 Starting transcription with TyphoonASR...")
         result = typhoon_asr.transcribe_file(temp_file)
 
+        # If requested, forward the transcript to the LLM and (optionally) TTS
+        if forward_to_llm:
+            # Create a new UploadFile backed by the temporary file we've saved
+            try:
+                new_handle = open(temp_file, 'rb')
+                new_upload = StarletteUploadFile(new_handle, filename=Path(file.filename).name)
+                resp = await transcribe_and_forward_to_llm(
+                    file=new_upload,
+                    synthesize=synthesize,
+                    fast_mode_tts=fast_mode_tts,
+                    return_tts_file=return_tts_file,
+                    history=history,
+                )
+                try:
+                    new_handle.close()
+                except Exception:
+                    pass
+                return resp
+            except Exception as e:
+                logger.error(f"Failed to create upload for forward_to_llm: {e}")
+                raise HTTPException(status_code=500, detail=f"Forward-to-LLM failed: {e}")
+
         return result
         
     except (KeyboardInterrupt, SystemExit) as e:
@@ -379,6 +417,138 @@ async def transcribe_audio(
     
     finally:
         # Clean up temporary file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception:
+                pass
+
+
+@app.post("/api/asr/llm")
+async def transcribe_and_forward_to_llm(
+    file: UploadFile = File(..., description="Audio file to transcribe and send to LLM"),
+    synthesize: bool = Form(False, description="If true, synthesize the LLM response via /api/tts/tts using the uploaded (reference) audio"),
+    fast_mode_tts: bool = Form(False, description="If true, enable fast_mode for TTS generation if available"),
+    return_tts_file: bool = Form(False, description="If true, return the generated TTS file path in the response"),
+    history: Optional[str] = Form(None, description="Optional conversation history JSON string (list of {role,content})")
+):
+    """Endpoint: Accept audio, transcribe via TyphoonASR, forward text to LLM, optionally synthesize LLM response via F5-TTS.
+
+    Steps:
+    - Save uploaded file to temporary disk
+    - Transcribe with TyphoonASR
+    - Lazy init and call multi_agent.process_voice_input(transcribed_text, conversation_history)
+    - Optionally call f5_tts.f5_api_new_integrate.text_to_speech with the original audio as reference and the LLM response as gen_text
+    """
+    global typhoon_asr, multi_agent, tts_module
+
+    if typhoon_asr is None:
+        raise HTTPException(status_code=503, detail="ASR backend not available")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    allowed_extensions = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.wma'}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        raise HTTPException(status_code=400, detail=f"Unsupported file format. Allowed: {', '.join(allowed_extensions)}")
+
+    temp_file = None
+    try:
+        audio_data = await file.read()
+        logger.info(f"📁 Received audio for /api/asr/llm: {file.filename} ({len(audio_data)} bytes)")
+
+        with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp:
+            tmp.write(audio_data)
+            temp_file = tmp.name
+
+        # Transcribe
+        logger.info("🎵 Transcribing audio (ASR -> LLM flow)")
+        asr_result = typhoon_asr.transcribe_file(temp_file)
+        transcript = asr_result.get('text') if isinstance(asr_result, dict) else str(asr_result)
+
+        # Prepare conversation_history if provided
+        conversation_history_obj = None
+        if history:
+            try:
+                conversation_history_obj = json.loads(history)
+            except Exception:
+                conversation_history_obj = None
+
+        # Ensure LLM orchestrator
+        if multi_agent is None:
+            if VoiceCallCenterMultiAgent is None:
+                raise HTTPException(status_code=503, detail=f"VoiceCallCenterMultiAgent unavailable. Cause: {multi_agent_import_error}")
+            try:
+                multi_agent = VoiceCallCenterMultiAgent()
+            except Exception as e:
+                raise HTTPException(status_code=503, detail=f"Failed initializing VoiceCallCenterMultiAgent: {e}")
+
+        # Call multi-agent
+        try:
+            logger.info("🧠 Forwarding transcript to LLM: %s", transcript)
+            llm_result = multi_agent.process_voice_input(transcript, conversation_history=conversation_history_obj)
+        except Exception as e:
+            logger.error(f"❌ LLM processing failed: {e}")
+            raise HTTPException(status_code=500, detail=f"LLM generation failed: {str(e)}")
+
+        response_payload = {
+            'transcription': transcript,
+            'asr_meta': asr_result,
+            'llm_response': llm_result,
+        }
+
+        # Optionally synthesize the LLM response via TTS module
+        if synthesize:
+            if tts_module is None:
+                logger.warning("⚠️ TTS module not available; cannot synthesize LLM response.")
+                response_payload['tts'] = {'success': False, 'reason': 'TTS module not available'}
+            else:
+                # Create a starlette UploadFile using temp_file
+                try:
+                    upload_handle = open(temp_file, 'rb')
+                    ref_upload = StarletteUploadFile(upload_handle, filename=Path(temp_file).name)
+                    # Call text_to_speech directly (it is async)
+                    logger.info("🔊 Calling TTS to synthesize LLM response")
+                    tts_resp = await tts_module.text_to_speech(
+                        ref_audio=ref_upload,
+                        ref_text=transcript,
+                        gen_text=llm_result.get('response', '') if isinstance(llm_result, dict) else str(llm_result),
+                        remove_silence=True,
+                        nfe_step=8 if fast_mode_tts else 16,
+                        cfg_strength=2.0,
+                        seed=-1,
+                        fast_mode=fast_mode_tts,
+                        return_file=return_tts_file,
+                    )
+                    # tts_resp may be a FileResponse (if return_file True) or a dict/pydantic model
+                    # If the TTS layer returned a FileResponse, return it directly to the caller.
+                    if isinstance(tts_resp, StarletteResponse):
+                        # Close the ref_upload handle before returning
+                        try:
+                            upload_handle.close()
+                        except Exception:
+                            pass
+                        return tts_resp
+                    response_payload['tts'] = {'success': True, 'result': tts_resp}
+                except Exception as e:
+                    logger.error(f"❌ TTS synth failed: {e}")
+                    response_payload['tts'] = {'success': False, 'reason': str(e)}
+                finally:
+                    try:
+                        upload_handle.close()
+                    except Exception:
+                        pass
+
+        return response_payload
+
+    except (KeyboardInterrupt, SystemExit) as e:
+        logger.error(f"🛑 Server interrupt during /api/asr/llm processing: {e}")
+        raise HTTPException(status_code=500, detail="Server interrupted during processing")
+    except Exception as e:
+        logger.error(f"❌ /api/asr/llm failed: {e}")
+        raise HTTPException(status_code=500, detail=f"ASR->LLM flow failed: {str(e)}")
+    finally:
         if temp_file and os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
@@ -414,6 +584,8 @@ async def root():
             "load_model": "/api/models/{model_id}/load",
             "reload": "/api/asr/reload",
             "llm": "/llm",
+            "asr_llm": "/api/asr/llm",
+            "asr_forward": "/api/asr?forward_to_llm=true",
             "llm_health": "/llm/health"
         },
         "supported_models": [
