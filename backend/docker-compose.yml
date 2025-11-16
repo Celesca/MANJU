@@ -1,0 +1,18 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: manju-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: siratee
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: manju_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
