@@ -1,0 +1,1 @@
+{"version":3,"file":"index.js","sources":["../../src/plugin/index.ts"],"sourcesContent":["export const pluginName = \"flowbite-react-plugin\";\n"],"names":[],"mappings":"AACY,MAAC,UAAU,GAAG;;;;"}

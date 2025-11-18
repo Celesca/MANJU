@@ -1,0 +1,18 @@
+export declare const classListFile = "class-list.json";
+export declare const configFile = "config.json";
+export declare const gitIgnoreFile = ".gitignore";
+export declare const initFile = "init";
+export declare const outputDir = ".flowbite-react";
+export declare const packageJsonFile = "package.json";
+export declare const pluginName = "flowbiteReact";
+export declare const pluginPath = "flowbite-react/plugin";
+export declare const processIdFile = "pid";
+export declare const vscodeDir = ".vscode";
+export declare const classListFilePath: string;
+export declare const configFilePath: string;
+export declare const gitIgnoreFilePath: string;
+export declare const initFilePath: string;
+export declare const initJsxFilePath: string;
+export declare const excludeDirs: string[];
+export declare const allowedExtensions: string[];
+export declare const automaticClassGenerationMessage: string;
