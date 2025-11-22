@@ -413,19 +413,36 @@ class VoiceCallCenterConfig:
     fast_model: Optional[str] = None  # Optional cheaper/faster model override
     
     def resolve(self):
-        # Try OpenRouter first, then Together AI
+        # Priority order for API keys/providers:
+        # 1) OpenAI (if OPENAI_API_KEY present) -> prefer `gpt-5-nano` by default
+        # 2) OpenRouter (OPENROUTER_API_KEY)
+        # 3) Together AI (TOGETHER_API_KEY)
+        # 4) Ollama/local fallback
+
+        # 1) OpenAI priority
+        if not self.api_key and os.getenv("OPENAI_API_KEY"):
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            # Use explicit OpenAI base URL unless overridden
+            self.base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            # If user didn't explicitly set LLM_MODEL, prefer gpt-5-nano
+            if not os.getenv("LLM_MODEL"):
+                self.model = "gpt-5-nano"
+
+        # 2) OpenRouter
         if not self.api_key:
             self.api_key = os.getenv("OPENROUTER_API_KEY")
             if self.api_key:
                 self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
                 if self.model == TOGETHER_MODEL:
                     self.model = OPENROUTER_MODEL
-        
+
+        # 3) Together AI
         if not self.api_key:
             self.api_key = os.getenv("TOGETHER_API_KEY")
             if self.api_key:
                 self.base_url = os.getenv("TOGETHER_BASE_URL", "https://api.together.xyz/v1")
-        
+
+        # If still not set, attempt to hydrate .env and re-check for OpenRouter/Together
         if not self.api_key:
             _late_env_hydrate()
             self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("TOGETHER_API_KEY")
@@ -433,15 +450,15 @@ class VoiceCallCenterConfig:
                 self.base_url = "https://openrouter.ai/api/v1"
                 if self.model == TOGETHER_MODEL:
                     self.model = OPENROUTER_MODEL
-            else:
+            elif os.getenv("TOGETHER_API_KEY"):
                 self.base_url = "https://api.together.xyz/v1"
-        
-        # Fallback to Ollama if no API keys found
+
+        # 4) Fallback to Ollama/local if no API keys found
         if not self.api_key:
-            self.model = "ollama/qwen3:8b"
-            self.base_url = "http://localhost:11434"
+            self.model = os.getenv("LLM_MODEL", "ollama/qwen3:8b")
+            self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             self.api_key = None  # Ollama doesn't require an API key
-        
+
         return self
 
     def refresh(self):
