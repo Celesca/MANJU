@@ -72,3 +72,5 @@ crewai[tools]
 librosa 
 soundfile
 nemo_toolkit[asr]
+
+elevenlabs

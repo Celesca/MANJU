@@ -524,14 +524,89 @@ class VoiceCallCenterMultiAgent:
                 effective_model = self.config.fast_model
 
         # Initialize LLM
-        self.llm = LLM(
-            model=effective_model,
-            api_key=self.config.api_key,
-            base_url=self.config.base_url,
-            temperature=effective_temperature,
-            max_tokens=effective_max_tokens,
-            timeout=effective_timeout,
-        )
+        # Some providers (new OpenAI models) expect 'max_completion_tokens' instead of 'max_tokens'.
+        llm_kwargs = {
+            'model': effective_model,
+            'api_key': self.config.api_key,
+            'base_url': self.config.base_url,
+            'temperature': effective_temperature,
+            'timeout': effective_timeout,
+        }
+
+        # If using OpenAI provider (explicit OPENAI_API_KEY or OpenAI base_url), prefer
+        # the 'max_completion_tokens' kwarg to avoid litellm/OpenAI parameter mismatch.
+        openai_detected = bool(os.getenv('OPENAI_API_KEY')) or (self.config.base_url and 'openai.com' in str(self.config.base_url))
+        if openai_detected:
+            llm_kwargs['max_completion_tokens'] = effective_max_tokens
+        else:
+            llm_kwargs['max_tokens'] = effective_max_tokens
+
+        try:
+            self.llm = LLM(**llm_kwargs)
+            # If OpenAI is detected, monkeypatch the llm.completion method to
+            # translate 'max_tokens' -> 'max_completion_tokens' so downstream
+            # callers (litellm internals) don't send unsupported params.
+            if openai_detected:
+                try:
+                    orig_completion = getattr(self.llm, 'completion', None)
+                    if callable(orig_completion):
+                        import inspect
+                        if inspect.iscoroutinefunction(orig_completion):
+                            async def _completion_wrapper(*a, **kw):
+                                if 'max_tokens' in kw:
+                                    kw['max_completion_tokens'] = kw.pop('max_tokens')
+                                elif 'max_completion_tokens' not in kw:
+                                    kw['max_completion_tokens'] = effective_max_tokens
+                                return await orig_completion(*a, **kw)
+                            setattr(self.llm, 'completion', _completion_wrapper)
+                        else:
+                            def _completion_wrapper(*a, **kw):
+                                if 'max_tokens' in kw:
+                                    kw['max_completion_tokens'] = kw.pop('max_tokens')
+                                elif 'max_completion_tokens' not in kw:
+                                    kw['max_completion_tokens'] = effective_max_tokens
+                                return orig_completion(*a, **kw)
+                            setattr(self.llm, 'completion', _completion_wrapper)
+                except Exception:
+                    logger.debug('Failed to monkeypatch llm.completion for OpenAI token param translation', exc_info=True)
+        except Exception as e:
+            # Fall back to passing max_tokens if provider-specific init fails
+            logger.warning(f"LLM init with provider-specific kwargs failed: {e}; retrying with generic args")
+            try:
+                self.llm = LLM(
+                    model=effective_model,
+                    api_key=self.config.api_key,
+                    base_url=self.config.base_url,
+                    temperature=effective_temperature,
+                    max_tokens=effective_max_tokens,
+                    timeout=effective_timeout,
+                )
+                # Also attempt to patch completion on fallback instance
+                if openai_detected:
+                    try:
+                        orig_completion = getattr(self.llm, 'completion', None)
+                        if callable(orig_completion):
+                            import inspect
+                            if inspect.iscoroutinefunction(orig_completion):
+                                async def _completion_wrapper(*a, **kw):
+                                    if 'max_tokens' in kw:
+                                        kw['max_completion_tokens'] = kw.pop('max_tokens')
+                                    elif 'max_completion_tokens' not in kw:
+                                        kw['max_completion_tokens'] = effective_max_tokens
+                                    return await orig_completion(*a, **kw)
+                                setattr(self.llm, 'completion', _completion_wrapper)
+                            else:
+                                def _completion_wrapper(*a, **kw):
+                                    if 'max_tokens' in kw:
+                                        kw['max_completion_tokens'] = kw.pop('max_tokens')
+                                    elif 'max_completion_tokens' not in kw:
+                                        kw['max_completion_tokens'] = effective_max_tokens
+                                    return orig_completion(*a, **kw)
+                                setattr(self.llm, 'completion', _completion_wrapper)
+                    except Exception:
+                        logger.debug('Failed to monkeypatch fallback llm.completion for OpenAI', exc_info=True)
+            except Exception:
+                raise
         
         # Initialize tools
         self.tools = {
