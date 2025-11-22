@@ -38,6 +38,33 @@ try:
     tts_src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "F5-TTS-THAI-API", "src")
     sys.path.append(tts_src_path)
     from f5_tts.f5_api_new_integrate import router as tts_router
+    # Also try to import the module so we can call a synth function directly if available
+    try:
+        import importlib, inspect
+        f5_api_module = importlib.import_module("f5_tts.f5_api_new_integrate")
+        # Try to find a plausible synth callable on the module or the router's routes
+        f5_synthesize_fn = None
+        for candidate in ("synthesize_text", "synthesize", "synthesize_tts", "tts_synthesize", "generate_tts", "speak"):
+            if hasattr(f5_api_module, candidate):
+                f5_synthesize_fn = getattr(f5_api_module, candidate)
+                break
+        # If not found on module, try to inspect router endpoints for a matching POST handler
+        if f5_synthesize_fn is None and hasattr(tts_router, "routes"):
+            for r in tts_router.routes:
+                try:
+                    path = getattr(r, "path", "")
+                except Exception:
+                    path = ""
+                if "synth" in path or "tts" in path or "speak" in path or "generate" in path:
+                    # endpoint may be wrapped; try to use r.endpoint if callable
+                    endpoint = getattr(r, "endpoint", None)
+                    if callable(endpoint):
+                        f5_synthesize_fn = endpoint
+                        break
+    except Exception as e:
+        f5_api_module = None
+        f5_synthesize_fn = None
+        tts_router_import_error = str(e)
 except Exception as e:
     tts_router = None
     tts_router_import_error = str(e)
@@ -379,6 +406,171 @@ async def transcribe_audio(
     
     finally:
         # Clean up temporary file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception:
+                pass
+
+
+@app.post("/api/talk")
+async def talk_pipe(
+    file: UploadFile = File(..., description="Audio file to process"),
+    tts: bool = Form(False, description="Whether to synthesize the LLM response to speech using F5 TTS"),
+    background_tasks: BackgroundTasks = None,
+):
+    """
+    Full pipeline endpoint: ASR -> LLM -> (optional) F5 TTS
+
+    - Accepts an audio file
+    - Transcribes via TyphoonASR
+    - Sends transcription to VoiceCallCenterMultiAgent to generate a response
+    - Optionally synthesizes the response via F5 TTS (if available)
+    """
+    global typhoon_asr, multi_agent, f5_synthesize_fn, tts_router
+
+    if typhoon_asr is None:
+        raise HTTPException(status_code=503, detail="ASR backend not available")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    temp_file = None
+    try:
+        audio_data = await file.read()
+        with tempfile.NamedTemporaryFile(suffix=Path(file.filename).suffix.lower(), delete=False) as tmp:
+            tmp.write(audio_data)
+            temp_file = tmp.name
+
+        # Run transcription in thread to avoid blocking
+        logger.info("/api/talk: starting transcription")
+        try:
+            trans_result = await asyncio.to_thread(typhoon_asr.transcribe_file, temp_file)
+        except Exception as e:
+            logger.error(f"Transcription error: {e}")
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
+
+        # Normalize transcription text
+        if isinstance(trans_result, dict):
+            asr_text = trans_result.get("text") or trans_result.get("transcription") or trans_result.get("transcript") or str(trans_result)
+        else:
+            asr_text = str(trans_result)
+
+        # Ensure LLM orchestrator exists
+        if multi_agent is None:
+            if VoiceCallCenterMultiAgent is None:
+                logger.warning("VoiceCallCenterMultiAgent unavailable for /api/talk")
+                raise HTTPException(status_code=503, detail=f"LLM orchestrator unavailable: {multi_agent_import_error}")
+            try:
+                multi_agent = VoiceCallCenterMultiAgent()
+            except Exception as e:
+                logger.error(f"Failed to init multi_agent: {e}")
+                raise HTTPException(status_code=503, detail=f"LLM init failed: {e}")
+
+        # Call LLM (may be sync); run in thread
+        logger.info("/api/talk: sending transcription to multi-agent LLM")
+        try:
+            llm_res = await asyncio.to_thread(multi_agent.process_voice_input, asr_text, None)
+        except Exception as e:
+            logger.error(f"LLM processing failed: {e}")
+            raise HTTPException(status_code=500, detail=f"LLM processing failed: {e}")
+
+        if isinstance(llm_res, dict):
+            llm_text = llm_res.get("response") or llm_res.get("text") or str(llm_res)
+        else:
+            llm_text = str(llm_res)
+
+        tts_info = None
+        # Optionally synthesize with F5 TTS
+        if tts:
+            logger.info("/api/talk: attempting TTS synthesis via F5")
+            try:
+                synth_result = None
+                # If we discovered a synth callable, try to call it
+                if 'f5_synthesize_fn' in globals() and f5_synthesize_fn:
+                    try:
+                        import inspect
+                        fn = f5_synthesize_fn
+                        sig = None
+                        try:
+                            sig = inspect.signature(fn)
+                        except Exception:
+                            sig = None
+
+                        kwargs = {}
+                        # Favor common parameter names
+                        if sig is not None:
+                            params = list(sig.parameters.keys())
+                            if 'text' in params:
+                                kwargs['text'] = llm_text
+                            elif 'input_text' in params:
+                                kwargs['input_text'] = llm_text
+                            elif len(params) >= 1:
+                                # pass as first positional arg by calling without kwargs
+                                pass
+
+                        if inspect.iscoroutinefunction(fn):
+                            if kwargs:
+                                synth_result = await fn(**kwargs)
+                            else:
+                                synth_result = await fn(llm_text)
+                        else:
+                            if kwargs:
+                                synth_result = await asyncio.to_thread(fn, **kwargs)
+                            else:
+                                synth_result = await asyncio.to_thread(fn, llm_text)
+
+                        tts_info = {"status": "synthesized", "result": synth_result}
+                    except Exception as e:
+                        logger.warning(f"F5 synth callable failed: {e}")
+                        tts_info = {"status": "failed", "error": str(e)}
+                else:
+                    # Fallback: try to find a POST route on tts_router and call its endpoint
+                    if tts_router is not None:
+                        synth_called = False
+                        for r in tts_router.routes:
+                            try:
+                                path = getattr(r, 'path', '')
+                            except Exception:
+                                path = ''
+                            if 'synth' in path or 'tts' in path or 'speak' in path or 'generate' in path:
+                                endpoint = getattr(r, 'endpoint', None)
+                                if callable(endpoint):
+                                    try:
+                                        import inspect
+                                        if inspect.iscoroutinefunction(endpoint):
+                                            synth_result = await endpoint(text=llm_text)
+                                        else:
+                                            synth_result = await asyncio.to_thread(endpoint, text=llm_text)
+                                        tts_info = {"status": "synthesized_via_router", "result": synth_result, "route": path}
+                                        synth_called = True
+                                        break
+                                    except Exception as e:
+                                        logger.warning(f"Router endpoint call failed: {e}")
+                                        tts_info = {"status": "failed", "error": str(e)}
+                        if not synth_called and tts_info is None:
+                            tts_info = {"status": "not_available", "detail": "No F5 synth callable or router endpoint found"}
+                    else:
+                        tts_info = {"status": "not_available", "detail": "F5 TTS router not mounted"}
+            except Exception as e:
+                logger.error(f"Unexpected error during TTS: {e}")
+                tts_info = {"status": "failed", "error": str(e)}
+
+        return {
+            "asr": asr_text,
+            "llm": llm_text,
+            "tts": tts_info,
+        }
+
+    except (KeyboardInterrupt, SystemExit) as e:
+        logger.error(f"Server interrupt during /api/talk: {e}")
+        raise HTTPException(status_code=500, detail="Server interrupted during processing")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected /api/talk error: {e}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {e}")
+    finally:
         if temp_file and os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
