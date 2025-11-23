@@ -88,6 +88,121 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# LiteLLM compatibility patch for OpenAI gpt-5 models
+# ---------------------------------------------------------------------------
+_OPENAI_LITELLM_PATCHED = False
+
+
+def _patch_litellm_max_completion_tokens(default_tokens: int = 128):
+    """Ensure litellm sends max_completion_tokens when calling new OpenAI models."""
+    global _OPENAI_LITELLM_PATCHED
+    if _OPENAI_LITELLM_PATCHED:
+        return
+
+    try:
+        import litellm  # type: ignore
+    except Exception:
+        return  # litellm not present; nothing to patch
+
+    if getattr(litellm, "_max_completion_tokens_patch", False):
+        _OPENAI_LITELLM_PATCHED = True
+        return
+
+    def _needs_openai_conversion(kwargs: Dict[str, Any]) -> bool:
+        model = str(kwargs.get("model", ""))
+        api_base = str(kwargs.get("api_base") or kwargs.get("base_url") or "")
+        return (
+            bool(os.getenv("OPENAI_API_KEY"))
+            or "openai.com" in api_base
+            or model.startswith("gpt-5")
+            or model.startswith("gpt-4.1")
+            or model.startswith("gpt-4o")
+        )
+
+    def _convert(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(kwargs, dict):
+            return kwargs
+        if not _needs_openai_conversion(kwargs):
+            return kwargs
+        kwargs = dict(kwargs)
+        removed_stop = kwargs.pop("stop", None)
+        if removed_stop not in (None, [], ()):  # stop is unsupported on new OpenAI models
+            logger.debug("Dropping unsupported stop parameter for %s", kwargs.get("model"))
+        if "temperature" in kwargs and kwargs["temperature"] not in (None, "auto", 1, 1.0):
+            logger.debug("Resetting temperature for %s to provider default", kwargs.get("model"))
+            kwargs["temperature"] = 1
+        if "max_tokens" in kwargs:
+            kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+        elif "max_completion_tokens" not in kwargs:
+            kwargs["max_completion_tokens"] = kwargs.get("max_tokens", default_tokens)
+        return kwargs
+
+    def _flatten_content(content: Any) -> Optional[str]:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            pieces: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    pieces.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("value")
+                    if isinstance(text, str):
+                        pieces.append(text)
+            if pieces:
+                return "".join(pieces).strip()
+        return None
+
+    def _normalize_response(resp: Any) -> Any:
+        if not isinstance(resp, dict):
+            return resp
+
+        choices = resp.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                message = choice.get("message") if isinstance(choice, dict) else None
+                if hasattr(choice, "message") and not message:
+                    message = getattr(choice, "message")  # type: ignore[attr-defined]
+                if isinstance(message, dict):
+                    content = message.get("content")
+                    flattened = _flatten_content(content)
+                    if not flattened:
+                        output_text = resp.get("output_text")
+                        if isinstance(output_text, list):
+                            flattened = "".join(output_text).strip()
+                    if not flattened:
+                        output = resp.get("output")
+                        if isinstance(output, list) and output:
+                            first = output[0]
+                            if isinstance(first, dict):
+                                flattened = _flatten_content(first.get("content"))
+                    if flattened:
+                        message["content"] = flattened
+        return resp
+
+    original_completion = getattr(litellm, "completion", None)
+    if callable(original_completion):
+        def completion_wrapper(*args, **kwargs):
+            resp = original_completion(*args, **_convert(kwargs))
+            return _normalize_response(resp)
+        litellm.completion = completion_wrapper  # type: ignore
+
+    original_acompletion = getattr(litellm, "acompletion", None)
+    if callable(original_acompletion):
+        async def acompletion_wrapper(*args, **kwargs):
+            resp = await original_acompletion(*args, **_convert(kwargs))
+            return _normalize_response(resp)
+        litellm.acompletion = acompletion_wrapper  # type: ignore
+
+    litellm._max_completion_tokens_patch = True  # type: ignore
+    _OPENAI_LITELLM_PATCHED = True
+
+
+# Apply patch early so all subsequent LLM creations benefit
+_patch_litellm_max_completion_tokens()
+
+
 # Configuration constants
 TOGETHER_MODEL = "together_ai/Qwen/Qwen2.5-7B-Instruct-Turbo"
 OPENROUTER_MODEL = "openrouter/qwen/qwen3-4b:free"
@@ -413,19 +528,36 @@ class VoiceCallCenterConfig:
     fast_model: Optional[str] = None  # Optional cheaper/faster model override
     
     def resolve(self):
-        # Try OpenRouter first, then Together AI
+        # Priority order for API keys/providers:
+        # 1) OpenAI (if OPENAI_API_KEY present) -> prefer `gpt-5-nano` by default
+        # 2) OpenRouter (OPENROUTER_API_KEY)
+        # 3) Together AI (TOGETHER_API_KEY)
+        # 4) Ollama/local fallback
+
+        # 1) OpenAI priority
+        if not self.api_key and os.getenv("OPENAI_API_KEY"):
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            # Use explicit OpenAI base URL unless overridden
+            self.base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            # If user didn't explicitly set LLM_MODEL, prefer gpt-5-nano
+            if not os.getenv("LLM_MODEL"):
+                self.model = "gpt-5-nano"
+
+        # 2) OpenRouter
         if not self.api_key:
             self.api_key = os.getenv("OPENROUTER_API_KEY")
             if self.api_key:
                 self.base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
                 if self.model == TOGETHER_MODEL:
                     self.model = OPENROUTER_MODEL
-        
+
+        # 3) Together AI
         if not self.api_key:
             self.api_key = os.getenv("TOGETHER_API_KEY")
             if self.api_key:
                 self.base_url = os.getenv("TOGETHER_BASE_URL", "https://api.together.xyz/v1")
-        
+
+        # If still not set, attempt to hydrate .env and re-check for OpenRouter/Together
         if not self.api_key:
             _late_env_hydrate()
             self.api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("TOGETHER_API_KEY")
@@ -433,15 +565,15 @@ class VoiceCallCenterConfig:
                 self.base_url = "https://openrouter.ai/api/v1"
                 if self.model == TOGETHER_MODEL:
                     self.model = OPENROUTER_MODEL
-            else:
+            elif os.getenv("TOGETHER_API_KEY"):
                 self.base_url = "https://api.together.xyz/v1"
-        
-        # Fallback to Ollama if no API keys found
+
+        # 4) Fallback to Ollama/local if no API keys found
         if not self.api_key:
-            self.model = "ollama/qwen3:8b"
-            self.base_url = "http://localhost:11434"
+            self.model = os.getenv("LLM_MODEL", "ollama/qwen3:8b")
+            self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             self.api_key = None  # Ollama doesn't require an API key
-        
+
         return self
 
     def refresh(self):
@@ -506,15 +638,99 @@ class VoiceCallCenterMultiAgent:
             if self.config.fast_model:
                 effective_model = self.config.fast_model
 
+        openai_model_family = ("gpt-5", "gpt-4.1", "gpt-4o")
+        if any(str(effective_model).startswith(prefix) for prefix in openai_model_family):
+            if effective_temperature not in (None, 1, 1.0):
+                logger.info(
+                    "Resetting temperature to 1 for %s because OpenAI only supports default",
+                    effective_model,
+                )
+                effective_temperature = 1.0
+
         # Initialize LLM
-        self.llm = LLM(
-            model=effective_model,
-            api_key=self.config.api_key,
-            base_url=self.config.base_url,
-            temperature=effective_temperature,
-            max_tokens=effective_max_tokens,
-            timeout=effective_timeout,
-        )
+        # Some providers (new OpenAI models) expect 'max_completion_tokens' instead of 'max_tokens'.
+        llm_kwargs = {
+            'model': effective_model,
+            'api_key': self.config.api_key,
+            'base_url': self.config.base_url,
+            'temperature': effective_temperature,
+            'timeout': effective_timeout,
+        }
+
+        # If using OpenAI provider (explicit OPENAI_API_KEY or OpenAI base_url), prefer
+        # the 'max_completion_tokens' kwarg to avoid litellm/OpenAI parameter mismatch.
+        openai_detected = bool(os.getenv('OPENAI_API_KEY')) or (self.config.base_url and 'openai.com' in str(self.config.base_url))
+        if openai_detected:
+            llm_kwargs['max_completion_tokens'] = effective_max_tokens
+        else:
+            llm_kwargs['max_tokens'] = effective_max_tokens
+
+        try:
+            self.llm = LLM(**llm_kwargs)
+            # If OpenAI is detected, monkeypatch the llm.completion method to
+            # translate 'max_tokens' -> 'max_completion_tokens' so downstream
+            # callers (litellm internals) don't send unsupported params.
+            if openai_detected:
+                try:
+                    orig_completion = getattr(self.llm, 'completion', None)
+                    if callable(orig_completion):
+                        import inspect
+                        if inspect.iscoroutinefunction(orig_completion):
+                            async def _completion_wrapper(*a, **kw):
+                                if 'max_tokens' in kw:
+                                    kw['max_completion_tokens'] = kw.pop('max_tokens')
+                                elif 'max_completion_tokens' not in kw:
+                                    kw['max_completion_tokens'] = effective_max_tokens
+                                return await orig_completion(*a, **kw)
+                            setattr(self.llm, 'completion', _completion_wrapper)
+                        else:
+                            def _completion_wrapper(*a, **kw):
+                                if 'max_tokens' in kw:
+                                    kw['max_completion_tokens'] = kw.pop('max_tokens')
+                                elif 'max_completion_tokens' not in kw:
+                                    kw['max_completion_tokens'] = effective_max_tokens
+                                return orig_completion(*a, **kw)
+                            setattr(self.llm, 'completion', _completion_wrapper)
+                except Exception:
+                    logger.debug('Failed to monkeypatch llm.completion for OpenAI token param translation', exc_info=True)
+        except Exception as e:
+            # Fall back to passing max_tokens if provider-specific init fails
+            logger.warning(f"LLM init with provider-specific kwargs failed: {e}; retrying with generic args")
+            try:
+                self.llm = LLM(
+                    model=effective_model,
+                    api_key=self.config.api_key,
+                    base_url=self.config.base_url,
+                    temperature=effective_temperature,
+                    max_tokens=effective_max_tokens,
+                    timeout=effective_timeout,
+                )
+                # Also attempt to patch completion on fallback instance
+                if openai_detected:
+                    try:
+                        orig_completion = getattr(self.llm, 'completion', None)
+                        if callable(orig_completion):
+                            import inspect
+                            if inspect.iscoroutinefunction(orig_completion):
+                                async def _completion_wrapper(*a, **kw):
+                                    if 'max_tokens' in kw:
+                                        kw['max_completion_tokens'] = kw.pop('max_tokens')
+                                    elif 'max_completion_tokens' not in kw:
+                                        kw['max_completion_tokens'] = effective_max_tokens
+                                    return await orig_completion(*a, **kw)
+                                setattr(self.llm, 'completion', _completion_wrapper)
+                            else:
+                                def _completion_wrapper(*a, **kw):
+                                    if 'max_tokens' in kw:
+                                        kw['max_completion_tokens'] = kw.pop('max_tokens')
+                                    elif 'max_completion_tokens' not in kw:
+                                        kw['max_completion_tokens'] = effective_max_tokens
+                                    return orig_completion(*a, **kw)
+                                setattr(self.llm, 'completion', _completion_wrapper)
+                    except Exception:
+                        logger.debug('Failed to monkeypatch fallback llm.completion for OpenAI', exc_info=True)
+            except Exception:
+                raise
         
         # Initialize tools
         self.tools = {
