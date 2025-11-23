@@ -952,107 +952,28 @@ class VoiceCallCenterMultiAgent:
         )
         
         try:
-            # Submit crew kickoff to threadpool and guard with a short timeout
             future = self._executor.submit(crew.kickoff)
             try:
+                # limit hierarchical crew to a short timeout; if exceeded, fallback
                 result = future.result(timeout=2.5)
             except concurrent.futures.TimeoutError:
                 future.cancel()
                 raise RuntimeError("LLM crew timed out (fast-fallback engaged)")
-
-            def _extract_text_from_result(res: Any) -> str:
-                """Robustly extract text from various Crew/Agent result shapes."""
-                if res is None:
-                    return ""
-                # If it's a dict-like object with common keys
-                try:
-                    if isinstance(res, dict):
-                        for k in ("response", "text", "result", "content", "output"):
-                            if k in res and res[k]:
-                                return str(res[k]).strip()
-                except Exception:
-                    pass
-                # If it has .get method
-                try:
-                    get = getattr(res, 'get', None)
-                    if callable(get):
-                        for k in ("response", "text", "result", "content", "output"):
-                            v = get(k)
-                            if v:
-                                return str(v).strip()
-                except Exception:
-                    pass
-                # If object has attributes commonly used
-                for attr in ('response', 'text', 'content', 'output'):
-                    if hasattr(res, attr):
-                        try:
-                            v = getattr(res, attr)
-                            if v:
-                                return str(v).strip()
-                        except Exception:
-                            pass
-                # Fallback to string representation
-                try:
-                    s = str(res).strip()
-                    return s
-                except Exception:
-                    return ""
-
-            response_text = _extract_text_from_result(result)
-
-            # If response is empty, attempt a couple retries with slightly longer timeout
-            if not response_text:
-                logger.warning("Received None or empty response from LLM call. Retrying up to 2 times...")
-                retry_result = None
-                for attempt in range(2):
-                    try:
-                        # try a direct kickoff (may block); run in thread with larger timeout
-                        fut = self._executor.submit(crew.kickoff)
-                        retry_result = fut.result(timeout=4.0)
-                        response_text = _extract_text_from_result(retry_result)
-                        if response_text:
-                            logger.info(f"LLM retry {attempt+1} succeeded")
-                            break
-                    except Exception as re:
-                        logger.warning(f"LLM retry {attempt+1} failed: {re}")
-
-            # Still empty -> fallback heuristics
-            if not response_text:
-                logger.error("LLM returned empty after retries; using deterministic fallback response")
-                # Try a deterministic, helpful reply based on input
-                text_lower = text.lower()
-                sku_match = re.search(r"[A-Za-z]{2,3}\d{3}", text)
-                if sku_match:
-                    sku = sku_match.group(0)
-                    resp = self.tools['products']._run(query_type='get_by_sku', sku=sku)
-                    final_resp = self._compose_final_response(resp, intent='PRODUCT', user_input=text)
-                elif any(k in text_lower for k in ['คืนสินค้า', 'การคืน', 'คืนเงิน', 'return']):
-                    resp = self.tools['rag']._run(query='นโยบายการคืนสินค้า', top_k=2)
-                    final_resp = self._compose_final_response(resp, intent='KNOWLEDGE', user_input=text)
-                else:
-                    final_resp = "ขออภัยครับ ระบบยังไม่สามารถให้คำตอบได้ตอนนี้ กรุณาลองใหม่หรือละเอียดคำถามเพิ่มเติม (เช่น ระบุรหัสสินค้า)"
-
-                processing_time = (datetime.now() - start_time).total_seconds()
-                return {
-                    "response": final_resp,
-                    "model": self.config.model,
-                    "processing_time_seconds": processing_time,
-                    "tools_available": list(self.tools.keys()),
-                    "timestamp": datetime.now().isoformat(),
-                    "fallback": True,
-                }
-
+            
+            response_text = str(result).strip()
+            
             # Clean up response formatting
             if "Final Answer:" in response_text:
                 response_text = response_text.split("Final Answer:")[-1].strip()
-
+            
             # Text preprocessing: remove unwanted symbols
             response_text = response_text.replace('\n', ' ')  # Remove newlines
             response_text = response_text.replace('**', '')  # Remove asterisks
             response_text = re.sub(r'[^a-zA-Z0-9\s\u0E00-\u0E7F]', '', response_text)  # Keep English letters, numbers, spaces, and Thai characters
             response_text = ' '.join(response_text.split())  # Normalize spaces
-
+            
             processing_time = (datetime.now() - start_time).total_seconds()
+            
             return {
                 "response": response_text,
                 "model": self.config.model,
