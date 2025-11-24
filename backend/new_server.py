@@ -27,7 +27,7 @@ import uvicorn
 # Multi-agent LLM orchestration
 multi_agent_import_error: Optional[str] = None
 try:
-    from MultiAgent_New import VoiceCallCenterMultiAgent
+    from MultiAgent_LangGraph import VoiceCallCenterMultiAgent
 except Exception as e:
     VoiceCallCenterMultiAgent = None  # Will validate on first use
     multi_agent_import_error = str(e)

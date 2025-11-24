@@ -36,6 +36,17 @@ sentence-transformers>=2.2.0
 PyPDF2>=3.0.0
 faiss-cpu>=1.7.0
 
+# Multi-Agent Systems
+# Option 1: CrewAI (original implementation)
+crewai>=0.28.0
+litellm>=1.0.0
+
+# Option 2: LangGraph (new implementation - recommended)
+langgraph>=0.0.30
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-community>=0.0.20
+
 # Google Sheets integration
 gspread>=5.0.0
 oauth2client>=4.1.0

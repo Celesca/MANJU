@@ -1,38 +1,67 @@
 # Multi-agent Call Center Backend
 
-High-performance Thai ASR (Automatic Speech Recognition) backend server for multi-agent call center system using faster-whisper.
+High-performance Thai voice call center backend with ASR (Automatic Speech Recognition) and multi-agent LLM orchestration.
 
 ## 🚀 Features
 
-- **Optimized Thai ASR**: Uses faster-whisper for 2-4x speed improvement over standard Whisper
-- **RESTful API**: FastAPI-based server with comprehensive endpoints
-- **Batch Processing**: Support for multiple audio files in single request
-- **Voice Activity Detection**: Automatic speech detection for better performance
+### ASR (Speech Recognition)
+- **Optimized Thai ASR**: Uses faster-whisper for 2-4x speed improvement
 - **Multiple Audio Formats**: Support for WAV, MP3, M4A, FLAC, OGG, WMA
 - **Auto Device Detection**: Automatically uses CUDA GPU when available
+- **Voice Activity Detection**: Automatic speech detection
+
+### Multi-Agent LLM System
+- **LangGraph Architecture**: Fast hierarchical multi-agent system (NEW!)
+- **CrewAI Fallback**: Original implementation still available
+- **Intent Classification**: Automatic routing to specialized agents
+- **RAG Support**: Document search with semantic retrieval
+- **Google Sheets Integration**: Real-time data access
+- **Fast-path Optimization**: Instant responses for common queries
+
+### API Features
+- **RESTful API**: FastAPI-based server
+- **Batch Processing**: Multiple audio files in single request
 - **Real-time Monitoring**: Health checks and performance metrics
+- **TTS Integration**: Text-to-speech support (F5-TTS-THAI)
 
 ## 📋 Requirements
 
-- Python 3.8+
-- CUDA GPU (optional, but recommended for best performance)
+- Python 3.9+
+- CUDA GPU (optional, but recommended for ASR)
 - FFmpeg (for audio processing)
+- API key for OpenRouter, Together AI, or OpenAI (for LLM)
 
 ## 🛠️ Installation
 
-### 1. Install Dependencies
+### 1. Install Core Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Install faster-whisper
+### 2. Install Multi-Agent Framework (Choose One)
 
+**Option A: LangGraph (Recommended)**
 ```bash
-pip install faster-whisper
+pip install langgraph langchain langchain-openai langchain-community
 ```
 
-### 3. Install FFmpeg (if not already installed)
+**Option B: CrewAI (Original)**
+```bash
+pip install crewai litellm
+```
+
+### 3. Install Optional Features
+
+```bash
+# Google Sheets integration
+pip install gspread oauth2client
+
+# RAG (document search)
+pip install PyPDF2 faiss-cpu sentence-transformers
+```
+
+### 4. Install FFmpeg (for audio processing)
 
 **Windows:**
 - Download from: https://github.com/BtbN/FFmpeg-Builds/releases
@@ -47,7 +76,70 @@ sudo apt update && sudo apt install ffmpeg
 brew install ffmpeg
 ```
 
+### 5. Set Up Environment Variables
+
+Create `.env` file:
+
+```bash
+# LLM API (choose one)
+OPENROUTER_API_KEY=your_key_here
+# TOGETHER_API_KEY=your_key_here
+# OPENAI_API_KEY=your_key_here
+
+# Optional: Model selection
+LLM_MODEL=openrouter/qwen/qwen3-4b:free
+
+# Optional: Local Ollama
+# (No API key needed, just run: ollama serve)
+```
+
 ## 🎬 Quick Start
+
+### Start Server
+
+```bash
+python new_server.py
+```
+
+Server will start on `http://localhost:8000`
+
+### Test ASR Endpoint
+
+```bash
+curl -X POST http://localhost:8000/api/asr \
+  -F "file=@audio.wav"
+```
+
+### Test LLM Endpoint
+
+```bash
+curl -X POST http://localhost:8000/llm \
+  -H "Content-Type: application/json" \
+  -d '{"text": "สวัสดีครับ ขอสอบถามแพ็กเกจอินเทอร์เน็ต"}'
+```
+
+### Check Health
+
+```bash
+curl http://localhost:8000/health
+```
+
+## 📖 Documentation
+
+### Multi-Agent System
+
+- **[QUICKSTART.md](QUICKSTART.md)** - Get started with LangGraph in 5 minutes
+- **[MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)** - Detailed migration from CrewAI to LangGraph
+- **[COMPARISON.md](COMPARISON.md)** - Technical comparison and benchmarks
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Visual system diagrams
+- **[MIGRATION_SUMMARY.md](MIGRATION_SUMMARY.md)** - Executive summary
+
+### Key Files
+
+- **MultiAgent_LangGraph.py** - LangGraph implementation (recommended)
+- **MultiAgent_New.py** - CrewAI implementation (original)
+- **new_server.py** - FastAPI server (auto-detects both)
+- **test_langgraph_migration.py** - Test suite
 
 ### Option 1: Using the Startup Script (Windows)
 
