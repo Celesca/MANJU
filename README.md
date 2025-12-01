@@ -33,63 +33,60 @@ A high-performance, multi-agent voice chatbot backend system designed for Thai l
 ## 🏗️ Architecture
 
 ```mermaid
-graph TB
+graph TD
     A[Voice Input] --> B[TyphoonASR]
     B --> C[Text Processing]
-    C --> D{Intent Classifier}
+    C --> D[Supervisor Agent]
+    D --> E{Intent Classification}
 
-    D --> E[Fast Path]
-    D --> F[Full CrewAI]
+    E -->|PRODUCT| F[Product Agent]
+    E -->|KNOWLEDGE| G[Knowledge Agent]
+    E -->|GENERAL| H[Response Agent]
 
-    E --> G[Direct Tool Calls]
-    E --> H[Cache Lookup]
-    E --> I[Parallel Search]
+    F --> I[Product Data Lookup]
+    G --> J[RAG Document Search]
+    H --> K[Canned Response]
 
-    F --> J[Supervisor Agent]
-    F --> K[Product Agent]
-    F --> L[Knowledge Agent]
-    F --> M[Response Agent]
+    I --> L[Response Agent]
+    J --> L
+    K --> L
 
-    G --> N[Response Generation]
-    H --> N
-    I --> N
-    J --> N
-    K --> N
-    L --> N
-    M --> N
+    L --> M[Final Response]
+    M --> N[F5-TTS-THAI]
+    N --> O[Voice Output]
 
-    N --> O[F5-TTS-THAI]
-    O --> P[Voice Output]
-
-    subgraph "Performance Layer"
-        Q[LRU Cache] --> G
-        R[ThreadPoolExecutor] --> I
-        S[Timeout Fallback] --> F
+    subgraph "Fast-Path Bypass"
+        P[Intent → Direct Tool] --> Q[Cache/SKU Lookup]
+        Q --> R[Immediate Response]
+        R --> M
     end
 
     subgraph "Data Sources"
-        T[Google Sheets] --> K
-        U[Document Store] --> L
-        V[Product DB] --> K
+        S[Google Sheets] --> F
+        T[Document Store] --> G
+        U[Product Database] --> F
     end
 
-    style E fill:#e1f5fe
-    style Q fill:#f3e5f5
-    style R fill:#e8f5e8
+    style D fill:#e3f2fd
+    style L fill:#f3e5f5
+    style P fill:#e8f5e8
 ```
 
-### Architecture Components
+### Hierarchical Flow
 
-#### Fast-Path Pipeline
-1. **Intent Classification**: Supervisor agent quickly categorizes queries
-2. **Direct Tool Execution**: Bypasses CrewAI for simple queries
-3. **Parallel Processing**: Concurrent data source queries
-4. **Smart Caching**: Frequently accessed data cached in memory
+1. **Supervisor Agent** → Classifies user intent (PRODUCT/KNOWLEDGE/GENERAL)
+2. **Specialized Agents** → Handle specific domains:
+   - **Product Agent**: SKU lookup, pricing, inventory
+   - **Knowledge Agent**: RAG search, policies, procedures
+   - **Response Agent**: General conversation, greetings
+3. **Response Agent** → Synthesizes final response with proper formatting
 
-#### Fallback Mechanisms
-- **Timeout Protection**: 2.5s limit on CrewAI operations
-- **Keyword Fallback**: Regex-based intent classification if agent fails
-- **Service Degradation**: Continues operation when optional services unavailable
+### Fast-Path Optimization
+
+For speed, simple queries bypass the full hierarchy:
+- Direct tool calls for SKU/product queries
+- Cached responses for frequent questions
+- Parallel processing for multiple data sources
 
 ## 📊 Performance Metrics
 

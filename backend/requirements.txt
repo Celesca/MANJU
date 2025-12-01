@@ -78,7 +78,6 @@ scipy>=1.10.0
 
 # Multi-agent LLM orchestration (OpenRouter via LiteLLM)
 crewai==0.86.0
-crewai[tools]
 
 librosa 
 soundfile
